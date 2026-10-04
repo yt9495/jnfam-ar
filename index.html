@@ -596,6 +596,7 @@ async function importWorkbook(file) {
       const notes = noteCols.map(c => val(ws, c + r)).filter(x => typeof x === 'string' && x.trim()).map(x => x.trim().replace(/^\*/, '')).join(' · ');
       const rowDate = E && typeof E === 'object' ? E.date : '';
       if (C) sumC += C; if (D) sumD += D;
+      const amtF = (ws[colL(H.amt) + r] && ws[colL(H.amt) + r].f) || ''; const half = /\/\s*2\s*$/.test(amtF);
       if (!C && !D) { if (B || memo) lastInv = null; continue; }
       let inv = null;
       if (C) {
@@ -610,10 +611,11 @@ async function importWorkbook(file) {
           if (!date && prevDate) { date = prevDate; flags.push('dateFromPrev'); }
           if (!date) flags.push('noDate');
           if (!B) flags.push('noInvoiceNo');
+          if (half) flags.push('deposit50');
           if (date) prevDate = date;
           const noteAll = [notes, interest ? `Interest ${money(interest)}` : ''].filter(Boolean).join(' · ');
           inv = { id: 'i_' + uid(), vendorId: v.id, invoiceNo: B, srcRef: B, invoiceDate: date, dueDate: '', amount: r2(C), memo, note: noteAll, poNo: '', interest: interest ? r2(interest) : 0,
-            product: productOf(memo + ' ' + B) || (v.group === 'intercompany' ? 'Duty refund' : ''), lines: [{ memo, amount: r2(C), product: productOf(memo + ' ' + B) }],
+            salesAmount: half ? r2(C * 2) : null, product: productOf(memo + ' ' + B) || (v.group === 'intercompany' ? 'Duty refund' : ''), lines: [{ memo, amount: r2(C), product: productOf(memo + ' ' + B) }],
             needsReview: flags.length > 0, reviewFlags: flags, seq: seq++, source: 'excel', _lump: new Set() };
           vInv.push(inv); lastInv = inv;
         }
@@ -1121,6 +1123,134 @@ ACT.exportPeriod = () => {
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(pv), 'Receipts in period');
   XLSX.writeFile(wb, `JNFAM_AR_${r.from}_${r.to}.xlsx`);
 };
+/* =================== SALES (판매액, invoice-date basis) =================== */
+Object.assign(L, {
+  sales: ['Sales', '매출(Sales)'], salesAmt: ['Sales amount', '판매액'], salesAmtFull: ['Sales amount (before deposit deduction)', '판매액 (선수금 공제 전)'],
+  salesHint: ['Leave blank = same as invoice amount. For 50% deposit-deduct invoices enter the full amount.', '비우면 청구액과 같음. 50% 선수금 공제 인보이스는 공제 전 전체 금액 입력.'],
+  salesBasis: ['Invoice-date basis, independent of receipts. Sales amount = before deposit deduction. Other receivables (duty refund) excluded.', '인보이스 일자 기준 · 입금과 무관 · 판매액은 선수금 공제 전 금액 · 기타 미수금(관세 환급) 제외'],
+  byCustomer: ['By customer', '고객별'], byProduct: ['By material', '품목별'], byCustProd: ['Customer × material', '고객 × 품목'],
+  salesTotal: ['Sales in period', '기간 판매액'], invoicedTotal: ['Invoiced in period', '기간 청구액'], monthlyAvg: ['Monthly average', '월평균'], depositDiff: ['Deposit-deducted portion', '선수금 공제분'],
+  allCustomers: ['All customers', '전체 고객'], allProducts: ['All materials', '전체 품목'], exportSales: ['Export sales', '매출 엑셀'],
+  dep50: ['50% deposit setting', '50% 공제 일괄 지정'], dep50Desc: ['Sets sales amount = invoice amount × 2 for the invoices below (50% deposit deducted on the invoice). AR balances are not affected.', '체크한 인보이스의 판매액을 청구액 × 2로 지정합니다 (인보이스에서 50% 선수금 공제). 기본으로 HF·HCl·HNO3만 체크됩니다. AR 잔액에는 영향 없음.'],
+  dep50Apply: ['Apply × 2', '× 2 적용'], dep50Clear: ['Reset to invoice amount', '청구액으로 되돌리기'], dep50Sel: ['{n} selected · invoice {a} → sales {b}', '{n}건 선택 · 청구 {a} → 판매 {b}'],
+  rv_deposit50: ['Excel amount was "/2" — sales amount set to full (× 2)', '엑셀 금액이 "/2" 수식 — 판매액을 전체 금액(×2)으로 지정'],
+});
+const salesOf = i => (i.salesAmount != null && i.salesAmount !== '' ? +i.salesAmount : +i.amount || 0);
+function salesLines(i) {   // product split of the sales amount (lines scaled to sales/invoice ratio)
+  const amt = +i.amount || 0, s = salesOf(i), k = amt ? s / amt : 1;
+  return invLines(i).map(l => ({ product: l.product || i.product || '', amount: r2((+l.amount || 0) * k) }));
+}
+UI.sal = Object.assign({ preset: 'ytd', month: todayStr().slice(0, 7), from: '', to: '', view: 'customer', vendor: '', product: '' }, Pref.get('sal', {}));
+const SAL_COLORS = ['#2a78d6', '#0f9b6c', '#eb6834', '#8b5cf6', '#e0a100', '#0ea5b7', '#d14d8b', '#6b7280', '#84a33a', '#b45309', '#475569'];
+
+function salesData(r) {
+  const f = UI.sal;
+  const months = []; let [y, m] = r.from.slice(0, 7).split('-').map(Number); const [ey, em] = r.to.slice(0, 7).split('-').map(Number);
+  while (y < ey || (y === ey && m <= em)) { months.push(`${y}-${pad(m)}`); m++; if (m > 12) { m = 1; y++; } }
+  const recs = [];
+  for (const i of S.invoices) {
+    const v = vendorById(i.vendorId); if (!v || isIC(v)) continue;
+    if (!i.invoiceDate || i.invoiceDate < r.from || i.invoiceDate > r.to) continue;
+    if (f.vendor && i.vendorId !== f.vendor) continue;
+    for (const l of salesLines(i)) { if (f.product && (l.product || '') !== f.product) continue; recs.push({ i, vid: i.vendorId, prod: l.product || '', mo: i.invoiceDate.slice(0, 7), amt: l.amount }); }
+  }
+  const pivot = keyFn => { const map = new Map(); for (const x of recs) { const k = keyFn(x); if (!map.has(k)) map.set(k, { key: k, m: {}, total: 0 }); const e = map.get(k); e.m[x.mo] = r2((e.m[x.mo] || 0) + x.amt); e.total = r2(e.total + x.amt); } return [...map.values()].sort((a, b) => b.total - a.total); };
+  const invSet = new Set(recs.map(x => x.i));
+  const total = r2(recs.reduce((s, x) => s + x.amt, 0)), invoiced = r2([...invSet].reduce((s, i) => s + (+i.amount || 0) * (f.product ? (salesLines(i).filter(l => l.product === f.product).reduce((a, l) => a + l.amount, 0) / (salesOf(i) || 1)) : 1), 0));
+  const monthTot = {}; for (const x of recs) monthTot[x.mo] = r2((monthTot[x.mo] || 0) + x.amt);
+  return { months, recs, byCust: pivot(x => x.vid), byProd: pivot(x => x.prod), byCP: pivot(x => x.vid + '|' + x.prod), total, invoiced, nInv: invSet.size, monthTot };
+}
+function salesCtl(r) {
+  const p = UI.sal;
+  return `<label class="chk">${t('period')} <select class="inp" id="salPreset">${PRESETS.map(k => `<option value="${k}" ${p.preset === k ? 'selected' : ''}>${t('per_' + k)}</option>`).join('')}</select></label>
+    ${p.preset === 'month' ? `<input type="month" class="inp" id="salMonth" value="${p.month}">` : ''}
+    ${p.preset === 'custom' ? `<input type="date" class="inp" id="salFrom" value="${r.from}"><span class="muted">~</span><input type="date" class="inp" id="salTo" value="${r.to}">` : `<span class="muted" style="font-size:12px">${perLabel(r)}</span>`}
+    <button class="btn ed" data-act="dep50">${t('dep50')}</button><button class="btn" data-act="exportSales">⤓ ${t('exportSales')}</button>`;
+}
+function vSales() {
+  if (!S.vendors.length) return welcome();
+  const f = UI.sal; const r = periodRange(f); const d = salesData(r);
+  const cust = S.vendors.filter(v => !isIC(v)).sort((a, b) => a.name.localeCompare(b.name));
+  let h = pageHead(t('sales'), '', salesCtl(r));
+  const kp = (l, v, s = '') => `<div class="card kpi" style="cursor:default"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s}</div></div>`;
+  const nMon = d.months.length || 1; const dep = r2(d.total - d.invoiced);
+  h += `<div class="vhead">${kp(t('salesTotal'), money(d.total, 0), t('invoicesN', { n: d.nInv }))}${kp(t('monthlyAvg'), money(d.total / nMon, 0), `${nMon}${LANG === 'ko' ? '개월' : ' months'}`)}${kp(t('invoicedTotal'), money(d.invoiced, 0), LANG === 'ko' ? 'AR 청구 기준' : 'AR invoice basis')}${kp(t('depositDiff'), money(dep, 0), LANG === 'ko' ? '판매액 − 청구액' : 'sales − invoiced')}</div>`;
+  h += `<div class="filters">
+    <div class="tabs" style="margin:0;border:0">${['customer', 'product', 'cp'].map(k => `<button class="${f.view === k ? 'on' : ''}" data-act="salView" data-v="${k}">${t(k === 'customer' ? 'byCustomer' : k === 'product' ? 'byProduct' : 'byCustProd')}</button>`).join('')}</div>
+    <span style="flex:1"></span>
+    <select class="inp" id="salV"><option value="">${t('allCustomers')}</option>${cust.map(v => `<option value="${v.id}" ${f.vendor === v.id ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select>
+    <select class="inp" id="salP"><option value="">${t('allProducts')}</option>${PRODUCTS.filter(p => p !== 'Duty refund').map(p => `<option value="${p}" ${f.product === p ? 'selected' : ''}>${esc(prodLabel(p))}</option>`).join('')}</select>
+  </div>`;
+  // chart (stacked by the current view's top series)
+  h += `<div class="card" style="margin-bottom:16px"><div class="card-h"><h3>${t('sales')} · ${perLabel(r)}</h3><span class="sp"></span><span class="muted" style="font-size:12px">${t('salesBasis')}</span></div><div class="card-b"><div class="chart-box" style="height:280px"><canvas id="chSales"></canvas></div></div></div>`;
+  // pivot table
+  const ms = d.months; const n = v => v ? money(v) : '<span class="muted">–</span>';
+  const head = `<tr><th>${f.view === 'product' ? t('account') : t('vendor')}</th>${f.view === 'cp' ? `<th>${t('account')}</th>` : ''}${ms.map(mo => `<th class="num">${monLabel(mo)}</th>`).join('')}<th class="num">${t('total')}</th><th class="num">%</th></tr>`;
+  const pct = v => d.total ? (v / d.total * 100).toFixed(1) + '%' : '';
+  let body = '';
+  if (f.view === 'customer') body = d.byCust.map(e => `<tr class="click" data-act="salPick" data-vendor="${e.key}"><td>${esc(vName(e.key))}</td>${ms.map(mo => `<td class="num">${n(e.m[mo])}</td>`).join('')}<td class="num"><b>${money(e.total)}</b></td><td class="num muted">${pct(e.total)}</td></tr>`).join('');
+  else if (f.view === 'product') body = d.byProd.map(e => `<tr class="click" data-act="salPick" data-product="${esc(e.key)}"><td>${esc(prodLabel(e.key))}</td>${ms.map(mo => `<td class="num">${n(e.m[mo])}</td>`).join('')}<td class="num"><b>${money(e.total)}</b></td><td class="num muted">${pct(e.total)}</td></tr>`).join('');
+  else {
+    for (const c of d.byCust) {
+      const subs = d.byCP.filter(e => e.key.startsWith(c.key + '|'));
+      body += subs.map((e, k) => { const prod = e.key.split('|')[1]; return `<tr>${k === 0 ? `<td rowspan="${subs.length + 1}" style="vertical-align:top;font-weight:600">${esc(vName(c.key))}</td>` : ''}<td>${esc(prodLabel(prod))}</td>${ms.map(mo => `<td class="num">${n(e.m[mo])}</td>`).join('')}<td class="num">${money(e.total)}</td><td class="num muted">${pct(e.total)}</td></tr>`; }).join('');
+      body += `<tr style="background:var(--surface-2)"><td class="muted">${t('total')}</td>${ms.map(mo => `<td class="num"><b>${n(c.m[mo])}</b></td>`).join('')}<td class="num"><b>${money(c.total)}</b></td><td class="num muted">${pct(c.total)}</td></tr>`;
+    }
+  }
+  h += `<div class="card"><div class="tbl-wrap"><table class="t"><thead>${head}</thead><tbody>${body || `<tr><td colspan="${ms.length + 3}" class="empty">${t('noData')}</td></tr>`}</tbody>
+    <tfoot><tr><td>${t('total')}</td>${f.view === 'cp' ? '<td></td>' : ''}${ms.map(mo => `<td class="num">${money(d.monthTot[mo] || 0)}</td>`).join('')}<td class="num">${money(d.total)}</td><td class="num">100%</td></tr></tfoot></table></div></div>`;
+  setTimeout(() => {
+    const save = () => { Pref.set('sal', UI.sal); render(); };
+    const on = (id, fn) => { const el = $('#' + id); if (el) el.onchange = () => fn(el.value); };
+    on('salPreset', v => { UI.sal.preset = v; if (v === 'custom') { UI.sal.from = UI.sal.from || r.from; UI.sal.to = UI.sal.to || r.to; } save(); });
+    on('salMonth', v => { if (v) { UI.sal.month = v; save(); } }); on('salFrom', v => { UI.sal.from = v; save(); }); on('salTo', v => { UI.sal.to = v; save(); });
+    on('salV', v => { UI.sal.vendor = v; save(); }); on('salP', v => { UI.sal.product = v; save(); });
+    const el = $('#chSales'); if (!el || !window.Chart) return;
+    const series = (f.view === 'product' ? d.byProd.map(e => ({ k: e.key, label: prodLabel(e.key), m: e.m })) : d.byCust.map(e => ({ k: e.key, label: vName(e.key), m: e.m })));
+    const top = series.slice(0, 8), rest = series.slice(8);
+    if (rest.length) top.push({ label: LANG === 'ko' ? '기타' : 'Others', m: rest.reduce((acc, s) => { for (const mo in s.m) acc[mo] = (acc[mo] || 0) + s.m[mo]; return acc; }, {}) });
+    CH.s = new Chart(el, { type: 'bar', data: { labels: ms.map(monLabel), datasets: top.map((s, k) => ({ label: s.label, data: ms.map(mo => s.m[mo] || 0), backgroundColor: SAL_COLORS[k % SAL_COLORS.length], borderRadius: 2, maxBarThickness: 34, stack: 's' })) },
+      options: { maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } }, tooltip: { mode: 'index', intersect: false, callbacks: { label: x => x.raw ? `${x.dataset.label}: ${money(x.raw, 0)}` : null, footer: xs => `${t('total')}: ${money(xs.reduce((s, x) => s + x.raw, 0), 0)}` } } }, scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, grid: { color: '#eef0f3' }, border: { display: false }, ticks: { callback: v => moneyK(v) } } } } });
+  });
+  return h;
+}
+ACT.salView = el => { UI.sal.view = el.dataset.v; Pref.set('sal', UI.sal); render(); };
+ACT.salPick = el => { if (el.dataset.vendor) UI.sal.vendor = el.dataset.vendor; if (el.dataset.product != null) UI.sal.product = el.dataset.product; UI.sal.view = 'cp'; Pref.set('sal', UI.sal); render(); };
+ACT.exportSales = () => {
+  const r = periodRange(UI.sal); const d = salesData(r); const ms = d.months;
+  const wb = XLSX.utils.book_new();
+  const sheet = (rows, labelFn, title) => { const a = [[`Sales ${r.from} ~ ${r.to} (invoice-date basis, before deposit deduction)`], [], [title, ...ms, 'Total']]; rows.forEach(e => a.push([...labelFn(e), ...ms.map(mo => e.m[mo] || 0), e.total])); a.push(['TOTAL', ...(title === 'Customer / Material' ? [''] : []), ...ms.map(mo => d.monthTot[mo] || 0), d.total]); return XLSX.utils.aoa_to_sheet(a); };
+  XLSX.utils.book_append_sheet(wb, sheet(d.byCust, e => [vName(e.key)], 'Customer'), 'By customer');
+  XLSX.utils.book_append_sheet(wb, sheet(d.byProd, e => [e.key || 'Unassigned'], 'Material'), 'By material');
+  const cp = [[`Sales ${r.from} ~ ${r.to}`], [], ['Customer', 'Material', ...ms, 'Total']]; d.byCP.forEach(e => { const [vid, p] = e.key.split('|'); cp.push([vName(vid), p || 'Unassigned', ...ms.map(mo => e.m[mo] || 0), e.total]); });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cp), 'Customer x Material');
+  const det = [['Customer', 'Invoice No', 'Invoice Date', 'Material', 'Sales amount', 'Invoice amount', 'PO No', 'Memo']];
+  [...new Set(d.recs.map(x => x.i))].sort((a, b) => a.invoiceDate.localeCompare(b.invoiceDate)).forEach(i => salesLines(i).forEach(l => det.push([vName(i.vendorId), i.invoiceNo, i.invoiceDate, l.product, l.amount, +i.amount, i.poNo || '', i.memo])));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(det), 'Detail');
+  XLSX.writeFile(wb, `JNFAM_Sales_${r.from}_${r.to}.xlsx`);
+};
+/* bulk: 50% deposit-deducted invoices → sales = amount × 2 */
+ACT.dep50 = () => {
+  const q = S.vendors.find(v => /q\s*-?cell/i.test(v.name));
+  const st = { vendor: q ? q.id : '', from: '2026-05-15', to: '2026-08-12' };   // suggested: first "/2" invoice … "Last 50% deposit" note
+  const body = `<p style="font-size:13px;color:var(--text-2);margin:0 0 12px">${t('dep50Desc')}</p>
+    <div class="filters"><select class="inp" id="dV">${S.vendors.filter(v => !isIC(v)).map(v => `<option value="${v.id}" ${st.vendor === v.id ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select>
+    <label class="chk">${t('from')} <input type="date" class="inp" id="dF" value="${st.from}"></label><label class="chk">${t('to')} <input type="date" class="inp" id="dT" value="${st.to}"></label></div>
+    <div class="tbl-wrap" style="max-height:360px" id="dBox"></div><div class="pill-sum" id="dSum"></div>`;
+  openModal({ title: t('dep50'), body, wide: true, foot: `<button class="btn ed" id="dClr">${t('dep50Clear')}</button><span class="sp"></span><button class="btn" data-act="closeModal">${t('cancel')}</button><button class="btn pri ed" id="dApply">${t('dep50Apply')}</button>` });
+  let list = [];
+  const draw = () => {
+    const vid = $('#dV').value, f = $('#dF').value, to = $('#dT').value;
+    list = S.invoices.filter(i => i.vendorId === vid && i.invoiceDate >= f && i.invoiceDate <= to).sort((a, b) => a.invoiceDate.localeCompare(b.invoiceDate));
+    $('#dBox').innerHTML = `<table class="t"><thead><tr><th><input type="checkbox" id="dAll"></th><th>${t('invDate')}</th><th>${t('invNo')}</th><th>${t('memo')}</th><th class="num">${t('amount')}</th><th class="num">${t('salesAmt')}</th></tr></thead><tbody>${list.map((i, k) => `<tr><td><input type="checkbox" class="dChk" data-k="${k}" ${['HF', 'HCl', 'HNO3'].includes(i.product || productOf(i.memo)) ? 'checked' : ''}></td><td>${i.invoiceDate}</td><td>${esc(i.invoiceNo)}</td><td class="wrap muted">${esc(i.memo)}</td><td class="num">${money(i.amount)}</td><td class="num">${i.salesAmount != null && i.salesAmount !== '' ? `<b>${money(i.salesAmount)}</b>` : '<span class="muted">=</span>'}</td></tr>`).join('') || `<tr><td colspan="6" class="empty">${t('noData')}</td></tr>`}</tbody></table>`;
+    const sum = () => { const sel = list.filter((_, k) => $(`.dChk[data-k="${k}"]`)?.checked); const a = sel.reduce((s, i) => s + (+i.amount || 0), 0); $('#dSum').textContent = t('dep50Sel', { n: sel.length, a: money(a), b: money(a * 2) }); return sel; };
+    $$('.dChk').forEach(c => c.onchange = sum); $('#dAll').onchange = e => { $$('.dChk').forEach(c => c.checked = e.target.checked); sum(); }; sum();
+    return sum;
+  };
+  let sel = draw(); ['dV', 'dF', 'dT'].forEach(id => $('#' + id).onchange = () => { sel = draw(); });
+  const commit = async x2 => { const items = sel(); if (!items.length) return; await Store.putMany('invoices', items.map(i => Store.stamp({ ...i, salesAmount: x2 ? r2(i.amount * 2) : null }))); closeModal(); toast(t('savedT')); render(); };
+  $('#dApply').onclick = () => commit(true); $('#dClr').onclick = () => commit(false);
+};
 ACT.go = el => {
   const [view, f] = el.dataset.go.split('|');
   if (view === 'invoices') { Object.assign(UI.inv, { q: '', vendor: '', from: '', to: '', bucket: '', status: 'unpaid' }); if (f === 'period') { const r = periodRange(); Object.assign(UI.inv, { status: 'all', from: r.from, to: r.to }); } else if (f === 'overdue') UI.inv.status = 'overdue'; else if (f === 'review') UI.inv.status = 'review'; else if (f === 'due7' || f === 'due30') UI.inv.status = f; else if (f && f.startsWith('bucket')) UI.inv.bucket = f.slice(6); }
@@ -1228,6 +1358,7 @@ function invoiceModal(inv, preset = {}) {
     <div class="f full"><label>${t('memo')}</label><input class="inp" id="iMemo" value="${esc(inv.memo)}"></div>
     <div class="f"><label>${t('account')}</label><select class="inp" id="iAcc">${productOptions(inv.product || productOf(inv.memo))}</select><span class="hint" id="iAccHint"></span></div>
     <div class="f"><label>${t('poNo')}</label><input class="inp" id="iPo" value="${esc(inv.poNo || '')}"></div>
+    <div class="f"><label>${t('salesAmtFull')}</label><div style="display:flex;gap:6px"><input class="inp" id="iSales" type="number" step="0.01" value="${inv.salesAmount ?? ''}" placeholder="= ${t('amount')}" style="flex:1"><button class="btn sm ed" type="button" id="iSalesX2">× 2</button></div><span class="hint">${t('salesHint')}</span></div>
     <div class="f"><label>${t('note')}</label><input class="inp" id="iNote" value="${esc(inv.note || '')}"></div>
     ${inv.lines && inv.lines.length > 1 ? `<div class="f full"><label>${LANG === 'ko' ? '품목 라인 (엑셀)' : 'Lines (Excel)'}</label><div class="muted" style="font-size:12px">${inv.lines.map(l => `${esc(l.memo || '—')} · ${money(l.amount)}`).join('<br>')}</div></div>` : ''}
     ${inv.needsReview ? `<div class="f full"><div class="warnbox">${(inv.reviewFlags || []).map(k => '• ' + t('rv_' + k, { y: (inv.invoiceDate || '').slice(0, 4) })).join('<br>')}<br><label class="chk" style="margin-top:6px;color:var(--warn)"><input type="checkbox" id="iRev" checked> ${t('clearReview')}</label></div></div>` : ''}
@@ -1242,9 +1373,10 @@ function invoiceModal(inv, preset = {}) {
     const d2 = findDuplicates({ vendorId: $('#iV').value, invoiceNo: $('#iNo').value, amount: +$('#iAmt').value, invoiceDate: d }, inv.id);
     $('#iDupBox').innerHTML = d2.length ? `<div class="warnbox">⚠ ${t('dup', { x: d2.map(i => `${i.invoiceNo || '—'} (${i.invoiceDate}, ${money(i.amount)})`).join(', ') })}</div>` : '';
   };
+  $('#iSalesX2').onclick = () => { $('#iSales').value = r2((+$('#iAmt').value || 0) * 2); };
   ['iV', 'iDate', 'iNo', 'iAmt'].forEach(id => $('#' + id).addEventListener('input', upd)); upd();
   $('#iSave').onclick = async () => {
-    const doc = { ...inv, vendorId: $('#iV').value, invoiceNo: $('#iNo').value.trim(), amount: r2($('#iAmt').value), invoiceDate: $('#iDate').value, dueDate: $('#iDue').value, memo: $('#iMemo').value.trim(), note: $('#iNote').value.trim(), product: $('#iAcc').value, poNo: $('#iPo').value.trim() };
+    const doc = { ...inv, vendorId: $('#iV').value, invoiceNo: $('#iNo').value.trim(), amount: r2($('#iAmt').value), invoiceDate: $('#iDate').value, dueDate: $('#iDue').value, memo: $('#iMemo').value.trim(), note: $('#iNote').value.trim(), product: $('#iAcc').value, poNo: $('#iPo').value.trim(), salesAmount: $('#iSales').value === '' ? null : r2($('#iSales').value) };
     if (doc.lines && doc.lines.length === 1) delete doc.lines;
     if (!doc.vendorId || !doc.invoiceDate || !$('#iAmt').value) return toast(t('required'), true);
     if ($('#iRev') && $('#iRev').checked) { doc.needsReview = false; doc.reviewFlags = []; }
@@ -1480,8 +1612,8 @@ function exportWorkbook() {
   ag.push(['TOTAL', '', '', ...c.tot.aging, c.tot.balance]);
   const ws1 = XLSX.utils.aoa_to_sheet(ag); ws1['!cols'] = [{ wch: 26 }, { wch: 10 }, { wch: 10 }, ...Array(7).fill({ wch: 14 })];
   XLSX.utils.book_append_sheet(wb, ws1, 'AR Aging');
-  const inv = [['Customer', 'Invoice No', 'Invoice Date', 'Due Date', 'Amount', 'Received', 'Open', 'Days late', 'Status', 'Product', 'PO No', 'Memo', 'Note']];
-  [...S.invoices].sort((a, b) => vName(a.vendorId).localeCompare(vName(b.vendorId)) || (a.invoiceDate || '').localeCompare(b.invoiceDate || '')).forEach(i => { const x = c.inv.get(i.id); inv.push([vName(i.vendorId), i.invoiceNo, i.invoiceDate, x?.due || invDue(i), +i.amount, x?.applied || 0, x?.open ?? +i.amount, x && x.open > 0.004 && x.dpd > 0 ? x.dpd : '', invStatus(i, x), i.product || '', i.poNo || '', i.memo, i.note || '']); });
+  const inv = [['Customer', 'Invoice No', 'Invoice Date', 'Due Date', 'Amount', 'Received', 'Open', 'Days late', 'Status', 'Product', 'PO No', 'Memo', 'Note', 'Sales Amount']];
+  [...S.invoices].sort((a, b) => vName(a.vendorId).localeCompare(vName(b.vendorId)) || (a.invoiceDate || '').localeCompare(b.invoiceDate || '')).forEach(i => { const x = c.inv.get(i.id); inv.push([vName(i.vendorId), i.invoiceNo, i.invoiceDate, x?.due || invDue(i), +i.amount, x?.applied || 0, x?.open ?? +i.amount, x && x.open > 0.004 && x.dpd > 0 ? x.dpd : '', invStatus(i, x), i.product || '', i.poNo || '', i.memo, i.note || '', salesOf(i)]); });
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(inv), 'Invoices');
   const pay = [['Customer', 'Receipt Date', 'Method', 'Reference', 'Amount', 'Adjustment', 'Applied', 'Unapplied', 'Applied To', 'Memo']];
   [...S.payments].sort((a, b) => (a.date || '').localeCompare(b.date || '')).forEach(p => pay.push([vName(p.vendorId), p.date, p.method, p.ref, +p.amount, +p.fee || 0, r2((p.allocations || []).reduce((s, a) => s + a.amount, 0)), payUnapplied(p), (p.allocations || []).map(a => S.invoices.find(i => i.id === a.invoiceId)?.invoiceNo).join(', '), p.memo]));
@@ -1650,14 +1782,14 @@ function vUsers() {
   const roleSel = (u) => `<select class="inp uRole" data-id="${esc(u.id)}" ${u.id === AUTH.email ? 'disabled' : ''}>${ROLES.map(r => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${t('role_' + r)}</option>`).join('')}</select>`;
   let h = pageHead(t('users'), `${ADM.users.length}`, `<button class="btn pri" data-act="addUser">＋ ${t('addUser')}</button>`);
   if (ADM.requests.length) h += `<div class="card" style="margin-bottom:16px"><div class="card-h"><h3>${t('requests')}</h3><span class="sp"></span><span class="b review">${ADM.requests.length}</span></div><div class="card-b"><table class="t"><tbody>${ADM.requests.map(r => `<tr><td><b>${esc(r.name || '')}</b><div class="muted">${esc(r.email)}</div></td><td class="muted">${(r.at || '').slice(0, 16).replace('T', ' ')}</td><td><select class="inp" id="rq_${esc(r.id).replace(/[^a-z0-9]/gi, '_')}">${ROLES.slice().reverse().map(x => `<option value="${x}">${t('role_' + x)}</option>`).join('')}</select></td><td class="right"><button class="btn sm pri" data-act="approveReq" data-id="${esc(r.id)}">${t('approve')}</button> <button class="btn sm" data-act="dismissReq" data-id="${esc(r.id)}">${t('dismiss')}</button></td></tr>`).join('')}</tbody></table></div></div>`;
-  h += `<div class="card"><div class="tbl-wrap"><table class="t"><thead><tr><th>${t('personName')}</th><th>${t('email')}</th><th>${t('role')}</th><th>${t('active')}</th><th>${t('lastLogin')}</th></tr></thead><tbody>
-    ${[...ADM.users].sort((a, b) => ROLES.indexOf(a.role) - ROLES.indexOf(b.role) || (a.name || '').localeCompare(b.name || '')).map(u => `<tr><td>${esc(u.name || '')} ${u.id === AUTH.email ? `<span class="b ic">${t('you')}</span>` : ''}</td><td class="muted">${esc(u.email)}</td><td>${roleSel(u)}</td><td><label class="chk"><input type="checkbox" class="uAct" data-id="${esc(u.id)}" ${u.active ? 'checked' : ''} ${u.id === AUTH.email ? 'disabled' : ''}></label></td><td class="muted">${(u.lastLogin || '').slice(0, 16).replace('T', ' ')}</td></tr>`).join('')}
+  h += `<div class="card"><div class="tbl-wrap"><table class="t"><thead><tr><th>${t('personName')}</th><th>${t('email')}</th><th>${t('role')}</th><th>${t('active')}</th><th>${t('lastLogin')}</th><th></th></tr></thead><tbody>
+    ${[...ADM.users].sort((a, b) => ROLES.indexOf(a.role) - ROLES.indexOf(b.role) || (a.name || '').localeCompare(b.name || '')).map(u => `<tr><td>${esc(u.name || '')} ${u.id === AUTH.email ? `<span class="b ic">${t('you')}</span>` : ''}</td><td class="muted">${esc(u.email)}</td><td>${roleSel(u)}</td><td><label class="chk"><input type="checkbox" class="uAct" data-id="${esc(u.id)}" ${u.active ? 'checked' : ''} ${u.id === AUTH.email ? 'disabled' : ''}></label></td><td class="muted">${(u.lastLogin || '').slice(0, 16).replace('T', ' ')}</td><td class="right" style="white-space:nowrap"><button class="btn sm" data-act="editUser" data-id="${esc(u.id)}">${t('edit')}</button>${u.id === AUTH.email ? '' : ` <button class="btn sm danger" data-act="delUser" data-id="${esc(u.id)}">${t('del')}</button>`}</td></tr>`).join('')}
   </tbody></table></div></div>
   <div class="card" style="margin-top:16px"><div class="card-b" style="font-size:13px;color:var(--text-2)">${ROLES.map(r => `<div style="margin:3px 0"><b style="color:var(--text)">${t('role_' + r)}</b> — ${t('roleDesc_' + r)}</div>`).join('')}</div></div>`;
   setTimeout(() => {
     const db = firebase.firestore();
-    $$('.uRole').forEach(s => s.onchange = async () => { try { await db.collection(CP + 'users').doc(s.dataset.id).update({ role: s.value, updatedAt: new Date().toISOString(), updatedBy: AUTH.email }); toast(t('savedT')); } catch (e) { toast(e.message, true); } });
-    $$('.uAct').forEach(c => c.onchange = async () => { try { await db.collection(CP + 'users').doc(c.dataset.id).update({ active: c.checked, updatedAt: new Date().toISOString(), updatedBy: AUTH.email }); toast(t('savedT')); } catch (e) { toast(e.message, true); } });
+    $$('.uRole').forEach(s => s.onchange = async () => { if (!keepsAdmin(s.dataset.id, { role: s.value })) { s.value = ADM.users.find(u => u.id === s.dataset.id)?.role; return toast(t('lastAdmin'), true); } try { await db.collection(CP + 'users').doc(s.dataset.id).update({ role: s.value, updatedAt: new Date().toISOString(), updatedBy: AUTH.email }); toast(t('savedT')); } catch (e) { toast(e.message, true); } });
+    $$('.uAct').forEach(c => c.onchange = async () => { if (!keepsAdmin(c.dataset.id, { active: c.checked })) { c.checked = true; return toast(t('lastAdmin'), true); } try { await db.collection(CP + 'users').doc(c.dataset.id).update({ active: c.checked, updatedAt: new Date().toISOString(), updatedBy: AUTH.email }); toast(t('savedT')); } catch (e) { toast(e.message, true); } });
   });
   return h;
 }
@@ -1667,6 +1799,29 @@ ACT.approveReq = async el => {
   try { await db.collection(CP + 'users').doc(id).set({ id, email: id, name: r?.name || '', role, active: true, createdAt: new Date().toISOString(), createdBy: AUTH.email }); await db.collection(CP + 'accessRequests').doc(id).delete(); toast(t('savedT')); } catch (e) { toast(e.message, true); }
 };
 ACT.dismissReq = async el => { if (!confirm(t('confirmDel'))) return; await firebase.firestore().collection(CP + 'accessRequests').doc(el.dataset.id).delete(); };
+/* at least one active admin must remain after a change/delete */
+function keepsAdmin(id, patch) { return ADM.users.some(u => { const x = u.id === id ? (patch === null ? null : { ...u, ...patch }) : u; return x && x.role === 'admin' && x.active; }); }
+ACT.editUser = el => {
+  const u = ADM.users.find(x => x.id === el.dataset.id); if (!u) return;
+  const me = u.id === AUTH.email;
+  openModal({ title: `${t('edit')} · ${esc(u.email)}`, body: `<div class="form">
+      <div class="f full"><label>${t('email')}</label><input class="inp" disabled value="${esc(u.email)}"><span class="hint">${LANG === 'ko' ? '이메일은 로그인 ID라 바꿀 수 없습니다. 바꾸려면 삭제 후 새로 추가하세요.' : 'Email is the sign-in ID. To change it, delete and add the user again.'}</span></div>
+      <div class="f"><label>${t('personName')}</label><input class="inp" id="euN" value="${esc(u.name || '')}"></div>
+      <div class="f"><label>${t('role')}</label><select class="inp" id="euR" ${me ? 'disabled' : ''}>${ROLES.map(r => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${t('role_' + r)}</option>`).join('')}</select></div>
+      <div class="f"><label>${t('active')}</label><label class="chk"><input type="checkbox" id="euA" ${u.active ? 'checked' : ''} ${me ? 'disabled' : ''}> ${t('active')}</label></div></div>`,
+    foot: `${me ? '' : `<button class="btn danger" data-act="delUser" data-id="${esc(u.id)}">${t('del')}</button>`}<span class="sp"></span><button class="btn" data-act="closeModal">${t('cancel')}</button><button class="btn pri" id="euS">${t('save')}</button>` });
+  $('#euS').onclick = async () => {
+    const patch = { name: $('#euN').value.trim() }; if (!me) { patch.role = $('#euR').value; patch.active = $('#euA').checked; }
+    if (!keepsAdmin(u.id, patch)) return toast(t('lastAdmin'), true);
+    try { await firebase.firestore().collection(CP + 'users').doc(u.id).update({ ...patch, updatedAt: new Date().toISOString(), updatedBy: AUTH.email }); closeModal(); toast(t('savedT')); } catch (e) { toast(e.message, true); }
+  };
+};
+ACT.delUser = async el => {
+  const id = el.dataset.id; if (id === AUTH.email) return;
+  if (!keepsAdmin(id, null)) return toast(t('lastAdmin'), true);
+  if (!confirm((LANG === 'ko' ? '이 사용자를 삭제할까요? 다시 로그인하면 접근 요청 상태가 됩니다.\n' : 'Delete this user? If they sign in again they will need approval.\n') + id)) return;
+  try { await firebase.firestore().collection(CP + 'users').doc(id).delete(); closeModal(); toast(t('deleted')); } catch (e) { toast(e.message, true); }
+};
 ACT.addUser = () => {
   openModal({ title: t('addUser'), body: `<div class="form"><div class="f full"><label>${t('email')} (Microsoft 365)</label><input class="inp" id="nuE" placeholder="name@company.com"></div><div class="f"><label>${t('personName')}</label><input class="inp" id="nuN"></div><div class="f"><label>${t('role')}</label><select class="inp" id="nuR">${ROLES.slice().reverse().map(x => `<option value="${x}">${t('role_' + x)}</option>`).join('')}</select></div></div>`,
     foot: `<span class="sp"></span><button class="btn" data-act="closeModal">${t('cancel')}</button><button class="btn pri" id="nuS">${t('save')}</button>` });
@@ -1817,7 +1972,7 @@ ACT.regSave = async el => {
 
 /* ---------- router / nav ---------- */
 const NAV = [
-  ['dashboard', '◧'], ['summary', '▤'], ['invoices', '≡'], ['register', '⤒', 'edit'], ['payments', '💳'], ['vendors', '◎'], ['users', '👥', 'admin', true], ['settings', '⚙'],
+  ['dashboard', '◧'], ['sales', '📈'], ['summary', '▤'], ['invoices', '≡'], ['register', '⤒', 'edit'], ['payments', '💳'], ['vendors', '◎'], ['users', '👥', 'admin', true], ['settings', '⚙'],
 ];
 function renderNav() {
   const cur = (location.hash.slice(1) || 'dashboard').split('/')[0];
@@ -1838,18 +1993,18 @@ function render(keepFocus) {
   if (CLOUD && AUTH.status !== 'ok') return;
   document.body.classList.toggle('ro', !can('edit')); document.body.classList.toggle('isadm', can('admin'));
   const noPerm = () => `<div class="errbox">${t('noPerm')}</div>`;
-  const fn = { dashboard: vDashboard, summary: vSummary, invoices: vInvoices, register: can('edit') ? vRegister : noPerm, payments: vPayments, vendors: vVendors, vendor: () => vVendor(arg), settings: vSettings, users: CLOUD ? vUsers : vDashboard }[view] || vDashboard;
+  const fn = { dashboard: vDashboard, sales: vSales, summary: vSummary, invoices: vInvoices, register: can('edit') ? vRegister : noPerm, payments: vPayments, vendors: vVendors, vendor: () => vVendor(arg), settings: vSettings, users: CLOUD ? vUsers : vDashboard }[view] || vDashboard;
   $('#view').innerHTML = fn();
   bindAsOf(); bindRegister();
   if (focusId && $('#' + focusId)) { const el = $('#' + focusId); el.focus(); try { el.setSelectionRange(caret, caret); } catch { } }
 }
 function setLang(l) { LANG = l; Pref.set('lang', l); document.documentElement.lang = l; render(); }
-const EDIT_ACTS = new Set(['newInv', 'payFor', 'payInv', 'newPay', 'newVendor', 'delInv', 'delPay', 'delVendor', 'regNewVendor', 'regSave', 'regAI', 'addUser', 'approveReq', 'dismissReq']);
+const EDIT_ACTS = new Set(['newInv', 'payFor', 'payInv', 'newPay', 'newVendor', 'delInv', 'delPay', 'delVendor', 'regNewVendor', 'regSave', 'regAI', 'dep50', 'addUser', 'editUser', 'delUser', 'approveReq', 'dismissReq']);
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]'); if (!el || !ACT[el.dataset.act]) return;
   e.preventDefault();
   const a = el.dataset.act;
-  if (EDIT_ACTS.has(a) && !can(['addUser', 'approveReq', 'dismissReq'].includes(a) ? 'admin' : 'edit')) return toast(t('noPerm'), true);
+  if (EDIT_ACTS.has(a) && !can(['addUser', 'editUser', 'delUser', 'approveReq', 'dismissReq'].includes(a) ? 'admin' : 'edit')) return toast(t('noPerm'), true);
   ACT[a](el, e);
 });
 window.addEventListener('unhandledrejection', e => { const m = (e.reason && (e.reason.message || e.reason.code)) || String(e.reason); if (/permission/i.test(m)) toast(t('noPerm'), true); else toast(m, true); });
