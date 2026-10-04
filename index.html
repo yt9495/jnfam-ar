@@ -959,87 +959,172 @@ function bindAsOf() {
   const c = $('#inclIC'); if (c) c.onchange = () => { UI.inclIC = c.checked; Pref.set('inclIC', UI.inclIC); render(); };
 }
 
+/* =================== PERIOD (구간) =================== */
+Object.assign(L, {
+  period: ['Period', '기간'], per_thisMonth: ['This month', '이번 달'], per_lastMonth: ['Last month', '지난 달'], per_month: ['Pick a month', '월 선택'],
+  per_thisQ: ['This quarter', '이번 분기'], per_lastQ: ['Last quarter', '지난 분기'], per_ytd: ['Year to date', '올해 누계'], per_lastYear: ['Last year', '작년'], per_custom: ['Custom range', '직접 지정'],
+  perInvoiced: ['Invoiced in period', '기간 청구액'], perReceived: ['Received in period', '기간 입금액'], perOpening: ['Opening AR', '기초 미수금'], perClosing: ['Closing AR', '기말 미수금'],
+  perOverdue: ['Overdue at period end', '기말 연체'], collectRate: ['Collection rate', '회수율'], collectRateHint: ['received ÷ (opening + invoiced)', '입금 ÷ (기초 + 청구)'],
+  rollTitle: ['Customer roll-forward', '고객별 기간 집계'], rollNote: ['Opening + Invoiced − Received − Adjustment = Closing. Aging and overdue are as of the period end.', '기초 + 청구 − 입금 − 조정 = 기말. Aging·연체는 기간 마지막 날 기준입니다.'],
+  monthTable: ['Monthly summary', '월별 집계'], month: ['Month', '월'], monthEndBal: ['Month-end AR', '월말 잔액'], adj: ['Adjustment', '조정'],
+  exportPeriod: ['Export period summary', '기간 집계 엑셀'], perEndBasis: ['as of {d}', '{d} 기준'], productPeriod: ['Invoiced by product (period)', '품목별 청구액 (기간)'],
+  invCnt: ['{n} invoices', '청구 {n}건'], payCnt: ['{n} receipts', '입금 {n}건'],
+});
+const PRESETS = ['thisMonth', 'lastMonth', 'month', 'thisQ', 'lastQ', 'ytd', 'lastYear', 'custom'];
+const monthEnd = (y, m) => ymd(new Date(y, m, 0));            // m: 1-12
+const minD = (a, b) => (a < b ? a : b);
+UI.per = Object.assign({ preset: 'thisMonth', month: todayStr().slice(0, 7), from: '', to: '' }, Pref.get('per', {}));
+function periodRange(p = UI.per) {
+  const today = todayStr(); const d = toDate(today); const y = d.getFullYear(), m = d.getMonth() + 1;
+  let r;
+  switch (p.preset) {
+    case 'lastMonth': { const x = new Date(y, m - 2, 1); r = [ymd(x), monthEnd(x.getFullYear(), x.getMonth() + 1)]; break; }
+    case 'month': { const [yy, mm] = (p.month || today.slice(0, 7)).split('-').map(Number); r = [`${yy}-${pad(mm)}-01`, minD(monthEnd(yy, mm), today)]; break; }
+    case 'thisQ': { const q = Math.floor((m - 1) / 3); r = [`${y}-${pad(q * 3 + 1)}-01`, minD(monthEnd(y, q * 3 + 3), today)]; break; }
+    case 'lastQ': { let q = Math.floor((m - 1) / 3) - 1, yy = y; if (q < 0) { q = 3; yy--; } r = [`${yy}-${pad(q * 3 + 1)}-01`, monthEnd(yy, q * 3 + 3)]; break; }
+    case 'ytd': r = [`${y}-01-01`, today]; break;
+    case 'lastYear': r = [`${y - 1}-01-01`, `${y - 1}-12-31`]; break;
+    case 'custom': r = [p.from || `${y}-01-01`, p.to || today]; break;
+    default: r = [`${y}-${pad(m)}-01`, today];   // thisMonth (to today)
+  }
+  if (r[0] > r[1]) r = [r[1], r[0]];
+  return { from: r[0], to: r[1] };
+}
+const perLabel = r => `${r.from} ~ ${r.to}`;
+function periodCtl(r) {
+  const p = UI.per;
+  return `<label class="chk">${t('period')} <select class="inp" id="perPreset">${PRESETS.map(k => `<option value="${k}" ${p.preset === k ? 'selected' : ''}>${t('per_' + k)}</option>`).join('')}</select></label>
+    ${p.preset === 'month' ? `<input type="month" class="inp" id="perMonth" value="${p.month}">` : ''}
+    ${p.preset === 'custom' ? `<input type="date" class="inp" id="perFrom" value="${r.from}"><span class="muted">~</span><input type="date" class="inp" id="perTo" value="${r.to}">` : `<span class="muted" style="font-size:12px">${perLabel(r)}</span>`}
+    <label class="chk"><input type="checkbox" id="inclIC" ${UI.inclIC ? 'checked' : ''}> ${t('inclIC')}</label>
+    <button class="btn" data-act="exportPeriod">⤓ ${t('exportPeriod')}</button>`;
+}
+function bindPeriod() {
+  const save = () => { Pref.set('per', UI.per); render(); };
+  const ps = $('#perPreset'); if (ps) ps.onchange = () => { UI.per.preset = ps.value; if (ps.value === 'custom') { const r = periodRange({ ...UI.per, preset: 'thisMonth' }); UI.per.from = UI.per.from || r.from; UI.per.to = UI.per.to || r.to; } save(); };
+  const pm = $('#perMonth'); if (pm) pm.onchange = () => { if (pm.value) { UI.per.month = pm.value; save(); } };
+  const pf = $('#perFrom'); if (pf) pf.onchange = () => { UI.per.from = pf.value; save(); };
+  const pt = $('#perTo'); if (pt) pt.onchange = () => { UI.per.to = pt.value; save(); };
+}
+/* period aggregation: per-customer roll-forward + monthly table */
+function periodStats(r, inclIC) {
+  const prev = addDays(r.from, -1);
+  const cO = compute({ asOf: prev, inclIC }), cC = compute({ asOf: r.to, inclIC });
+  const ok = id => inclIC || !isIC(vendorById(id));
+  const inRange = d => d && d >= r.from && d <= r.to;
+  const rows = new Map();
+  const row = id => { if (!rows.has(id)) rows.set(id, { vendorId: id, opening: cO.byV.get(id)?.balance || 0, invoiced: 0, nInv: 0, received: 0, nPay: 0, adj: 0, closing: cC.byV.get(id)?.balance || 0, overdue: cC.byV.get(id)?.overdue || 0, aging: cC.byV.get(id)?.aging || [0, 0, 0, 0, 0] }); return rows.get(id); };
+  S.vendors.filter(v => ok(v.id)).forEach(v => row(v.id));
+  const prod = new Map();
+  for (const i of S.invoices) { if (!ok(i.vendorId) || !inRange(i.invoiceDate)) continue; const x = row(i.vendorId); x.invoiced = r2(x.invoiced + (+i.amount || 0)); x.nInv++; for (const ln of invLines(i)) { const p = ln.product || i.product || ''; prod.set(p, r2((prod.get(p) || 0) + (+ln.amount || 0))); } }
+  for (const p of S.payments) { if (!ok(p.vendorId) || !inRange(p.date)) continue; const x = row(p.vendorId); x.received = r2(x.received + (+p.amount || 0)); x.adj = r2(x.adj + (+p.fee || 0)); x.nPay++; }
+  const list = [...rows.values()];
+  const sum = k => r2(list.reduce((s, x) => s + (x[k] || 0), 0));
+  const tot = { opening: sum('opening'), invoiced: sum('invoiced'), nInv: sum('nInv'), received: sum('received'), nPay: sum('nPay'), adj: sum('adj'), closing: sum('closing'), overdue: sum('overdue'), aging: cC.tot.aging };
+  // monthly rows: months touched by the period; a single-month period shows the 12 months ending with it
+  const months = []; let [y, m] = r.from.slice(0, 7).split('-').map(Number); const [ey, em] = r.to.slice(0, 7).split('-').map(Number);
+  if (y === ey && m === em) { const s = new Date(ey, em - 12, 1); y = s.getFullYear(); m = s.getMonth() + 1; }
+  while (y < ey || (y === ey && m <= em)) { months.push(`${y}-${pad(m)}`); m++; if (m > 12) { m = 1; y++; } }
+  const monthly = months.map(mo => {
+    const [yy, mm] = mo.split('-').map(Number); const end = minD(monthEnd(yy, mm), todayStr()); const st = mo + '-01';
+    const inv = S.invoices.filter(i => ok(i.vendorId) && i.invoiceDate >= st && i.invoiceDate <= end);
+    const pay = S.payments.filter(p => ok(p.vendorId) && p.date >= st && p.date <= end);
+    return { mo, invoiced: r2(inv.reduce((s, i) => s + (+i.amount || 0), 0)), received: r2(pay.reduce((s, p) => s + (+p.amount || 0), 0)), adj: r2(pay.reduce((s, p) => s + (+p.fee || 0), 0)), closing: st <= todayStr() ? compute({ asOf: end, inclIC }).tot.balance : null, inPeriod: end >= r.from && st <= r.to };
+  });
+  return { rows: list, tot, prod, monthly, cC };
+}
+const monLabel = mo => { const [y, m] = mo.split('-'); return LANG === 'ko' ? `${y}.${m}` : `${MONTHS[+m - 1][0].toUpperCase() + MONTHS[+m - 1].slice(1)} ${y}`; };
+
 /* =================== DASHBOARD =================== */
 function vDashboard() {
   if (!S.vendors.length) return welcome();
-  const c = compute({ asOf: UI.asOf, inclIC: UI.inclIC });
-  let od = { a: 0, n: 0 }, d7 = { a: 0, n: 0 }, d30 = { a: 0, n: 0 }, review = 0;
-  const overdue = [], upcoming = [];
+  const r = periodRange(); UI.asOf = r.to;
+  const ps = periodStats(r, UI.inclIC); const c = ps.cC; const tot = ps.tot;
+  let review = 0; const overdue = [], upcoming = [];
   for (const i of S.invoices) {
     if (!c.vOK(i.vendorId)) continue;
     if (i.needsReview) review++;
     const x = c.inv.get(i.id); if (!x || x.agingOpen <= 0.004) continue;
-    if (x.dpd > 0) { od.a += x.agingOpen; od.n++; overdue.push([i, x]); }
-    else { if (-x.dpd <= 7) { d7.a += x.agingOpen; d7.n++; } if (-x.dpd <= 30) { d30.a += x.agingOpen; d30.n++; } if (-x.dpd <= 14) upcoming.push([i, x]); }
+    if (x.dpd > 0) overdue.push([i, x]); else if (-x.dpd <= 14) upcoming.push([i, x]);
   }
-  const mo = UI.asOf.slice(0, 7);
-  const paidM = S.payments.filter(p => c.vOK(p.vendorId) && p.date && p.date.startsWith(mo) && p.date <= UI.asOf);
-  const paidMTD = paidM.reduce((s, p) => s + (+p.amount || 0), 0);
   const payRv = S.payments.filter(p => p.needsReview && c.vOK(p.vendorId)).length;
-  const tot = c.tot;
+  const base = r2(tot.opening + tot.invoiced); const rate = base > 0 ? tot.received / base : 0;
   const kpi = (l, v, s, cls = '', go = '') => `<div class="card kpi ${cls}" ${go ? `data-act="go" data-go="${go}"` : ''}><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s}</div></div>`;
-  const openN = [...c.inv.entries()].filter(([id, x]) => x.agingOpen > 0.004 && c.vOK(S.invoices.find(i => i.id === id)?.vendorId)).length;
-  let h = pageHead(t('dashboard'), '', asOfCtl());
+  let h = pageHead(t('dashboard'), '', periodCtl(r));
   h += `<div class="kpis">
-    ${kpi(t('totalAP'), money(tot.balance, 0), t('invoicesN', { n: openN }), '', 'invoices|unpaid')}
-    ${kpi(t('overdue'), money(od.a, 0), t('invoicesN', { n: od.n }), od.a > 0 ? 'bad' : '', 'invoices|overdue')}
-    ${kpi(t('due7'), money(d7.a, 0), t('invoicesN', { n: d7.n }), d7.a > 0 ? 'warn' : '', 'invoices|due7')}
-    ${kpi(t('due30'), money(d30.a, 0), t('invoicesN', { n: d30.n }), '', 'invoices|due30')}
-    ${kpi(t('paidMTD'), money(paidMTD, 0), t('paysN', { n: paidM.length }) + (payRv ? ` · <span style="color:var(--warn)">${LANG === 'ko' ? '검토' : 'review'} ${payRv}</span>` : ''), '', 'payments|mtd')}
-    ${kpi(t('needReview'), review, t('invoicesN', { n: review }), review ? 'warn' : '', 'invoices|review')}
+    ${kpi(t('perOpening'), money(tot.opening, 0), t('perEndBasis', { d: addDays(r.from, -1) }))}
+    ${kpi(t('perInvoiced'), money(tot.invoiced, 0), t('invCnt', { n: tot.nInv }), '', 'invoices|period')}
+    ${kpi(t('perReceived'), money(tot.received, 0), t('payCnt', { n: tot.nPay }) + (payRv ? ` · <span style="color:var(--warn)">${LANG === 'ko' ? '검토' : 'review'} ${payRv}</span>` : ''), '', 'payments|period')}
+    ${kpi(t('perClosing'), money(tot.closing, 0), t('perEndBasis', { d: r.to }), '', 'invoices|unpaid')}
+    ${kpi(t('perOverdue'), money(tot.overdue, 0), t('invoicesN', { n: overdue.length }), tot.overdue > 0 ? 'bad' : '', 'invoices|overdue')}
+    ${kpi(t('collectRate'), (rate * 100).toFixed(1) + '%', t('collectRateHint') + (review ? ` · <span style="color:var(--warn)">${t('needReview')} ${review}</span>` : ''))}
   </div>`;
-  // aging
-  const sum = tot.aging.reduce((s, x) => s + Math.max(0, x), 0) || 1;
-  const ageBar = tot.aging.map((x, k) => x > 0 ? `<div style="width:${(x / sum * 100).toFixed(2)}%;background:${AGE_COLORS[k]}" title="${t(BUCKETS[k])}: ${money(x)}"></div>` : '').join('');
-  const ageLeg = tot.aging.map((x, k) => `<span class="it" data-act="go" data-go="invoices|bucket${k}"><span class="sw" style="background:${AGE_COLORS[k]}"></span>${t(BUCKETS[k])} <b>${money(x, 0)}</b> <span class="muted">${(Math.max(0, x) / sum * 100).toFixed(0)}%</span></span>`).join('');
-  const top = [...c.vendors].filter(r => r.balance > 0.004).sort((a, b) => b.balance - a.balance).slice(0, 10);
-  const tmax = top[0]?.balance || 1;
+  const undated = S.payments.filter(p => !p.date && c.vOK(p.vendorId));
+  if (undated.length) h += `<div class="warnbox" style="cursor:pointer" data-act="go" data-go="payments|review">⚠ ${LANG === 'ko' ? `입금일이 없는 입금 ${undated.length}건 (${money(undated.reduce((s, p) => s + (+p.amount || 0), 0))}) — 기간 집계에 들어가지 않아 기초·기말이 맞지 않을 수 있습니다. 입금 내역에서 날짜를 넣어주세요.` : `${undated.length} receipts have no date (${money(undated.reduce((s, p) => s + (+p.amount || 0), 0))}) — they are left out of period totals. Add their dates under Receipts.`}</div>`;
+  // customer roll-forward
+  const rows = ps.rows.filter(x => [x.opening, x.invoiced, x.received, x.closing].some(v => Math.abs(v) > 0.004)).sort((a, b) => b.closing - a.closing || b.invoiced - a.invoiced);
+  const n = v => Math.abs(v) < 0.005 ? '<span class="muted">–</span>' : money(v);
+  h += `<div class="card" style="margin-bottom:16px"><div class="card-h"><h3>${t('rollTitle')} · ${perLabel(r)}</h3><span class="sp"></span><a class="link" href="#summary" style="font-size:12px">${t('summary')} →</a></div><div class="card-b"><div class="tbl-wrap"><table class="t"><thead><tr><th>${t('vendor')}</th><th class="num">${t('perOpening')}</th><th class="num">${t('invoiced')}</th><th class="num">${t('paid')}</th><th class="num">${t('adj')}</th><th class="num">${t('perClosing')}</th><th class="num">${t('overdue')}</th>${BUCKETS.slice(1).map(b => `<th class="num">${t(b)}</th>`).join('')}</tr></thead><tbody>
+    ${rows.map(x => `<tr class="click" data-act="vendor" data-id="${x.vendorId}"><td>${esc(vName(x.vendorId))} ${isIC(vendorById(x.vendorId)) ? `<span class="b ic">${t('intercompany')}</span>` : ''}</td><td class="num">${n(x.opening)}</td><td class="num">${n(x.invoiced)}${x.nInv ? ` <span class="muted" style="font-size:11px">(${x.nInv})</span>` : ''}</td><td class="num">${n(x.received)}${x.nPay ? ` <span class="muted" style="font-size:11px">(${x.nPay})</span>` : ''}</td><td class="num">${n(x.adj)}</td><td class="num"><b>${n(x.closing)}</b></td><td class="num" ${x.overdue > 0.004 ? 'style="color:var(--bad)"' : ''}>${n(x.overdue)}</td>${x.aging.slice(1).map(v => `<td class="num" ${v > 0.004 ? 'style="color:var(--bad)"' : ''}>${n(v)}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="11" class="empty">${t('noData')}</td></tr>`}
+    </tbody><tfoot><tr><td>${t('total')}</td><td class="num">${money(tot.opening)}</td><td class="num">${money(tot.invoiced)}</td><td class="num">${money(tot.received)}</td><td class="num">${money(tot.adj)}</td><td class="num">${money(tot.closing)}</td><td class="num">${money(tot.overdue)}</td>${tot.aging.slice(1).map(v => `<td class="num">${money(v)}</td>`).join('')}</tr></tfoot></table></div>
+    <div class="muted" style="font-size:12px;margin-top:8px">${t('rollNote')}</div></div></div>`;
+  // monthly chart + table, product
+  const accTop = [...ps.prod.entries()].filter(e => Math.abs(e[1]) > 0.004).sort((a, b) => b[1] - a[1]).slice(0, 10); const amax = accTop[0]?.[1] || 1;
   h += `<div class="row2">
-    <div class="card"><div class="card-h"><h3>${t('agingTitle')}</h3><span class="sp"></span><a class="link" href="#summary" style="font-size:12px">${t('summary')} →</a></div><div class="card-b">
-      <div class="agebar">${ageBar}</div><div class="legend">${ageLeg}</div>
-      <div style="margin-top:18px" class="tbl-wrap"><table class="t"><thead><tr><th>${t('vendor')}</th>${BUCKETS.map(b => `<th class="num">${t(b)}</th>`).join('')}<th class="num">${t('total')}</th></tr></thead><tbody>
-      ${top.slice(0, 6).map(r => `<tr class="click" data-act="vendor" data-id="${r.vendorId}"><td>${esc(vName(r.vendorId))}</td>${r.aging.map(x => `<td class="num ${Math.abs(x) < 0.005 ? 'muted' : ''}">${Math.abs(x) < 0.005 ? '–' : money(x, 0)}</td>`).join('')}<td class="num"><b>${money(r.balance, 0)}</b></td></tr>`).join('')}
-      </tbody></table></div>
+    <div class="card"><div class="card-h"><h3>${t('monthTable')}</h3><span class="sp"></span><span class="legend" style="margin:0"><span class="it"><span class="sw" style="background:var(--s1)"></span>${t('invoiced')}</span><span class="it"><span class="sw" style="background:var(--s2)"></span>${t('paid')}</span><span class="it"><span class="sw" style="background:#9ca3af;height:3px"></span>${t('monthEndBal')}</span></span></div><div class="card-b"><div class="chart-box"><canvas id="chMonthly"></canvas></div>
+      <div class="tbl-wrap" style="margin-top:12px;max-height:260px"><table class="t"><thead><tr><th>${t('month')}</th><th class="num">${t('invoiced')}</th><th class="num">${t('paid')}</th><th class="num">${t('adj')}</th><th class="num">${t('monthEndBal')}</th></tr></thead><tbody>
+      ${[...ps.monthly].reverse().map(x => `<tr ${x.inPeriod ? '' : 'style="opacity:.55"'}><td>${monLabel(x.mo)}</td><td class="num">${n(x.invoiced)}</td><td class="num">${n(x.received)}</td><td class="num">${n(x.adj)}</td><td class="num">${x.closing == null ? '' : money(x.closing)}</td></tr>`).join('')}
+      </tbody></table></div></div></div>
+    <div class="card"><div class="card-h"><h3>${t('productPeriod')}</h3></div><div class="card-b"><div class="hbars">
+      ${accTop.map(([code, v]) => `<div class="hb" title="${esc(prodLabel(code))}: ${money(v)}"><span class="nm">${esc(prodLabel(code))}</span><span class="tr"><i style="width:${Math.max(0, v / amax * 100).toFixed(1)}%"></i></span><span class="vv">${moneyK(v)}</span></div>`).join('') || `<div class="empty">${t('noData')}</div>`}
+    </div>
+    <div style="margin-top:18px"><div style="font-weight:600;font-size:13px;margin-bottom:8px">${t('agingTitle')} · ${t('perEndBasis', { d: r.to })}</div>
+      <div class="agebar">${(() => { const sm = tot.aging.reduce((s, x) => s + Math.max(0, x), 0) || 1; return tot.aging.map((x, k) => x > 0 ? `<div style="width:${(x / sm * 100).toFixed(2)}%;background:${AGE_COLORS[k]}" title="${t(BUCKETS[k])}: ${money(x)}"></div>` : '').join(''); })()}</div>
+      <div class="legend">${tot.aging.map((x, k) => `<span class="it" data-act="go" data-go="invoices|bucket${k}"><span class="sw" style="background:${AGE_COLORS[k]}"></span>${t(BUCKETS[k])} <b>${money(x, 0)}</b></span>`).join('')}</div></div>
     </div></div>
-    <div class="card"><div class="card-h"><h3>${t('topVendors')}</h3></div><div class="card-b"><div class="hbars">
-      ${top.length ? top.map(r => `<div class="hb" data-act="vendor" data-id="${r.vendorId}" title="${esc(vName(r.vendorId))}: ${money(r.balance)}"><span class="nm">${esc(vName(r.vendorId))}</span><span class="tr"><i style="width:${(r.balance / tmax * 100).toFixed(1)}%"></i></span><span class="vv">${moneyK(r.balance)}</span></div>`).join('') : `<div class="empty">${t('noData')}</div>`}
-    </div></div></div>
-  </div>`;
-  // monthly + account
-  const yr = UI.asOf.slice(0, 4);
-  const acc = new Map();
-  for (const i of S.invoices) { if (!c.vOK(i.vendorId) || !(i.invoiceDate || '').startsWith(yr) || i.invoiceDate > UI.asOf) continue; for (const ln of invLines(i)) { const p = ln.product || i.product || ''; acc.set(p, (acc.get(p) || 0) + (+ln.amount || 0)); } }
-  const accTop = [...acc.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10); const amax = accTop[0]?.[1] || 1;
-  h += `<div class="row3">
-    <div class="card"><div class="card-h"><h3>${t('monthly')} · ${yr}</h3><span class="sp"></span><span class="legend" style="margin:0"><span class="it"><span class="sw" style="background:var(--s1)"></span>${t('invoiced')}</span><span class="it"><span class="sw" style="background:var(--s2)"></span>${t('paid')}</span></span></div><div class="card-b"><div class="chart-box"><canvas id="chMonthly"></canvas></div></div></div>
-    <div class="card"><div class="card-h"><h3>${t('byAccount')}</h3></div><div class="card-b"><div class="hbars">
-      ${accTop.map(([code, v]) => `<div class="hb" title="${esc(prodLabel(code))}: ${money(v)}"><span class="nm">${esc(prodLabel(code))}</span><span class="tr"><i style="width:${(v / amax * 100).toFixed(1)}%"></i></span><span class="vv">${moneyK(v)}</span></div>`).join('') || `<div class="empty">${t('noData')}</div>`}
-    </div></div></div>
   </div>`;
   overdue.sort((a, b) => b[1].dpd - a[1].dpd); upcoming.sort((a, b) => a[1].due.localeCompare(b[1].due));
-  const miniTbl = (rows, dcol) => rows.length ? `<div class="tbl-wrap" style="max-height:320px"><table class="t"><thead><tr><th>${t('vendor')}</th><th>${t('invNo')}</th><th>${t('dueDate')}</th><th class="num">${dcol}</th><th class="num">${t('open')}</th></tr></thead><tbody>${rows.slice(0, 12).map(([i, x]) => `<tr class="click" data-act="editInv" data-id="${i.id}"><td class="wrap">${esc(vName(i.vendorId))}</td><td class="wrap">${esc(i.invoiceNo)}</td><td>${x.due}</td><td class="num">${t('dayN', { n: Math.abs(x.dpd) })}</td><td class="num">${money(x.agingOpen)}</td></tr>`).join('')}</tbody></table></div>${rows.length > 12 ? `<div class="muted" style="font-size:12px;margin-top:6px">+${rows.length - 12}</div>` : ''}` : `<div class="empty">${t('noData')}</div>`;
+  const miniTbl = (rws, dcol) => rws.length ? `<div class="tbl-wrap" style="max-height:320px"><table class="t"><thead><tr><th>${t('vendor')}</th><th>${t('invNo')}</th><th>${t('dueDate')}</th><th class="num">${dcol}</th><th class="num">${t('open')}</th></tr></thead><tbody>${rws.slice(0, 12).map(([i, x]) => `<tr class="click" data-act="editInv" data-id="${i.id}"><td class="wrap">${esc(vName(i.vendorId))}</td><td class="wrap">${esc(i.invoiceNo)}</td><td>${x.due}</td><td class="num">${t('dayN', { n: Math.abs(x.dpd) })}</td><td class="num">${money(x.agingOpen)}</td></tr>`).join('')}</tbody></table></div>${rws.length > 12 ? `<div class="muted" style="font-size:12px;margin-top:6px">+${rws.length - 12}</div>` : ''}` : `<div class="empty">${t('noData')}</div>`;
   h += `<div class="row3">
-    <div class="card"><div class="card-h"><h3>${t('overdueList')}</h3><span class="sp"></span><span class="b overdue">${od.n}</span></div><div class="card-b">${miniTbl(overdue, LANG === 'ko' ? '연체일' : 'Days late')}</div></div>
+    <div class="card"><div class="card-h"><h3>${t('overdueList')} · ${t('perEndBasis', { d: r.to })}</h3><span class="sp"></span><span class="b overdue">${overdue.length}</span></div><div class="card-b">${miniTbl(overdue, LANG === 'ko' ? '연체일' : 'Days late')}</div></div>
     <div class="card"><div class="card-h"><h3>${t('upcoming')}</h3><span class="sp"></span><span class="b open">${upcoming.length}</span></div><div class="card-b">${miniTbl(upcoming, LANG === 'ko' ? '남은 일수' : 'Days left')}</div></div>
   </div>`;
   setTimeout(() => {
-    const inv = Array(12).fill(0), pd = Array(12).fill(0);
-    S.invoices.forEach(i => { if (c.vOK(i.vendorId) && (i.invoiceDate || '').startsWith(yr) && i.invoiceDate <= UI.asOf) inv[+i.invoiceDate.slice(5, 7) - 1] += +i.amount || 0; });
-    S.payments.forEach(p => { if (c.vOK(p.vendorId) && (p.date || '').startsWith(yr) && p.date <= UI.asOf) pd[+p.date.slice(5, 7) - 1] += +p.amount || 0; });
+    bindPeriod();
     const el = $('#chMonthly'); if (!el || !window.Chart) return;
     const css = getComputedStyle(document.documentElement);
+    const mo = ps.monthly;
     CH.m = new Chart(el, {
-      type: 'bar',
-      data: { labels: ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'].map(m => LANG === 'ko' ? m + '월' : MONTHS[m - 1][0].toUpperCase() + MONTHS[m - 1].slice(1)), datasets: [{ label: t('invoiced'), data: inv, backgroundColor: css.getPropertyValue('--s1').trim(), borderRadius: 4, maxBarThickness: 18 }, { label: t('paid'), data: pd, backgroundColor: css.getPropertyValue('--s2').trim(), borderRadius: 4, maxBarThickness: 18 }] },
+      data: { labels: mo.map(x => monLabel(x.mo)), datasets: [
+        { type: 'bar', label: t('invoiced'), data: mo.map(x => x.invoiced), backgroundColor: css.getPropertyValue('--s1').trim(), borderRadius: 4, maxBarThickness: 18, order: 2 },
+        { type: 'bar', label: t('paid'), data: mo.map(x => x.received), backgroundColor: css.getPropertyValue('--s2').trim(), borderRadius: 4, maxBarThickness: 18, order: 2 },
+        { type: 'line', label: t('monthEndBal'), data: mo.map(x => x.closing), borderColor: '#9ca3af', backgroundColor: '#9ca3af', borderWidth: 2, pointRadius: 2, tension: .2, order: 1 }] },
       options: { maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false, callbacks: { label: x => `${x.dataset.label}: ${money(x.raw, 0)}` } } }, scales: { x: { grid: { display: false } }, y: { grid: { color: '#eef0f3' }, border: { display: false }, ticks: { callback: v => moneyK(v) } } } },
     });
   });
   return h;
 }
+ACT.exportPeriod = () => {
+  const r = periodRange(); const ps = periodStats(r, true);
+  const wb = XLSX.utils.book_new();
+  const a = [[`AR roll-forward ${r.from} ~ ${r.to}`], [], ['Customer', 'Type', 'Opening', 'Invoiced', '# Inv', 'Received', '# Rcpt', 'Adjustment', 'Closing', 'Overdue', 'Current', '1-30', '31-60', '61-90', '>90']];
+  ps.rows.forEach(x => { const v = vendorById(x.vendorId); a.push([v?.name || '', isIC(v) ? 'Other' : 'Customer', x.opening, x.invoiced, x.nInv, x.received, x.nPay, x.adj, x.closing, x.overdue, ...x.aging]); });
+  a.push(['TOTAL', '', ps.tot.opening, ps.tot.invoiced, ps.tot.nInv, ps.tot.received, ps.tot.nPay, ps.tot.adj, ps.tot.closing, ps.tot.overdue, ...ps.tot.aging]);
+  const ws = XLSX.utils.aoa_to_sheet(a); ws['!cols'] = [{ wch: 24 }, { wch: 10 }, ...Array(13).fill({ wch: 14 })];
+  XLSX.utils.book_append_sheet(wb, ws, 'Roll-forward');
+  const m = [['Month', 'Invoiced', 'Received', 'Adjustment', 'Month-end AR']]; ps.monthly.forEach(x => m.push([x.mo, x.invoiced, x.received, x.adj, x.closing ?? '']));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(m), 'Monthly');
+  const inRange = d => d && d >= r.from && d <= r.to;
+  const iv = [['Customer', 'Invoice No', 'Invoice Date', 'Amount', 'Product', 'PO No', 'Memo']]; S.invoices.filter(i => inRange(i.invoiceDate)).sort((x, y) => x.invoiceDate.localeCompare(y.invoiceDate)).forEach(i => iv.push([vName(i.vendorId), i.invoiceNo, i.invoiceDate, +i.amount, i.product || '', i.poNo || '', i.memo]));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(iv), 'Invoices in period');
+  const pv = [['Customer', 'Receipt Date', 'Amount', 'Adjustment', 'Applied To', 'Memo']]; S.payments.filter(p => inRange(p.date)).sort((x, y) => x.date.localeCompare(y.date)).forEach(p => pv.push([vName(p.vendorId), p.date, +p.amount, +p.fee || 0, (p.allocations || []).map(al => S.invoices.find(i => i.id === al.invoiceId)?.invoiceNo).join(', '), p.memo]));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(pv), 'Receipts in period');
+  XLSX.writeFile(wb, `JNFAM_AR_${r.from}_${r.to}.xlsx`);
+};
 ACT.go = el => {
   const [view, f] = el.dataset.go.split('|');
-  if (view === 'invoices') { Object.assign(UI.inv, { q: '', vendor: '', from: '', to: '', bucket: '', status: 'unpaid' }); if (f === 'overdue') UI.inv.status = 'overdue'; else if (f === 'review') UI.inv.status = 'review'; else if (f === 'due7' || f === 'due30') UI.inv.status = f; else if (f && f.startsWith('bucket')) UI.inv.bucket = f.slice(6); }
-  if (view === 'payments') { Object.assign(UI.pay, { q: '', vendor: '', method: '', from: UI.asOf.slice(0, 7) + '-01', to: UI.asOf }); }
+  if (view === 'invoices') { Object.assign(UI.inv, { q: '', vendor: '', from: '', to: '', bucket: '', status: 'unpaid' }); if (f === 'period') { const r = periodRange(); Object.assign(UI.inv, { status: 'all', from: r.from, to: r.to }); } else if (f === 'overdue') UI.inv.status = 'overdue'; else if (f === 'review') UI.inv.status = 'review'; else if (f === 'due7' || f === 'due30') UI.inv.status = f; else if (f && f.startsWith('bucket')) UI.inv.bucket = f.slice(6); }
+  if (view === 'payments') { const r = periodRange(); Object.assign(UI.pay, { q: '', vendor: '', method: '', review: f === 'review', from: f === 'period' ? r.from : f === 'review' ? '' : UI.asOf.slice(0, 7) + '-01', to: f === 'period' ? r.to : f === 'review' ? '' : UI.asOf }); }
   location.hash = view;
 };
 ACT.vendor = el => { location.hash = 'vendor/' + el.dataset.id; };
