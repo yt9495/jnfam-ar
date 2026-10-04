@@ -1,0 +1,1792 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JNFAM AR Manager</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+<script>
+/* ===================== 배포 설정 / Deployment settings =====================
+   Leave firebase.apiKey empty to run in LOCAL mode (data in this browser only).
+   AR data lives in its own Firestore collections (prefix "ar_") inside the shared project. */
+window.AR_CONFIG = {
+  firebase: {
+    apiKey: "AIzaSyA9rk_MsTf2uptvTdCkeT6VXpfsi4h0XxA",
+    authDomain: "hwq-demand.firebaseapp.com",
+    projectId: "hwq-demand",
+    storageBucket: "hwq-demand.firebasestorage.app",
+    messagingSenderId: "228979453814",
+    appId: "1:228979453814:web:7e879de14688abe3755457"
+  },
+  collectionPrefix: "ar_",
+  msTenant: "9e2f9e87-0f8e-4b71-87d4-c0b36430e0a6",   // JNFAM (jnfam.onmicrosoft.com)
+  adminEmails: ["ytkang@jnfam.onmicrosoft.com"],
+  aiProxyUrl: "https://script.google.com/macros/s/AKfycbx8dxsCZQZ3vSddbp6mOFshyG9eLC1Rg_xToz1E4OAiBbMXqyhUZXT0-chV4xn2yUnPcQ/exec"
+};
+</script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+:root{
+  --bg:#f6f7f9; --surface:#ffffff; --surface-2:#f9fafb; --line:#e5e7eb; --line-2:#eef0f3;
+  --text:#111827; --text-2:#4b5563; --muted:#9ca3af;
+  --accent:#0f8a7e; --accent-d:#0b6b62; --accent-l:#e3f4f1;
+  --s1:#2a78d6; --s2:#0f9b6c;
+  --good:#15803d; --good-l:#e7f6ec; --warn:#b45309; --warn-l:#fef3e2; --bad:#c53030; --bad-l:#fdecec; --info-l:#eef2ff;
+  --ag0:#2a78d6; --ag1:#f2a27f; --ag2:#eb6834; --ag3:#c4421a; --ag4:#7f2410;
+  --r:10px; --shadow:0 1px 2px rgba(16,24,40,.05),0 1px 3px rgba(16,24,40,.06);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--text);font:14px/1.45 Inter,"Noto Sans KR",system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+button,input,select,textarea{font:inherit;color:inherit}
+#app{display:flex;min-height:100vh}
+.nav{width:220px;flex:none;background:var(--surface);border-right:1px solid var(--line);display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+.brand{display:flex;gap:10px;align-items:center;padding:18px 18px 14px}
+.logo{width:34px;height:34px;border-radius:9px;background:var(--accent);color:#fff;display:grid;place-items:center;font-weight:700;font-size:13px}
+.brand-t{font-weight:700;letter-spacing:.02em}
+.brand-s{font-size:12px;color:var(--text-2)}
+#navlinks{display:flex;flex-direction:column;padding:6px 10px;gap:2px;flex:1}
+#navlinks a{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;color:var(--text-2);text-decoration:none;font-weight:500}
+#navlinks a:hover{background:var(--surface-2);color:var(--text)}
+#navlinks a.on{background:var(--accent-l);color:var(--accent-d)}
+#navlinks a .ico{width:18px;text-align:center;opacity:.85}
+#navlinks a .cnt{margin-left:auto;background:var(--bad-l);color:var(--bad);font-size:11px;border-radius:10px;padding:0 7px;font-weight:600}
+.nav-foot{padding:12px 14px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:8px}
+.lang-top{padding:0 14px 10px;border-bottom:1px solid var(--line);margin-bottom:6px}
+.lang-lbl{display:block;font-size:11px;color:var(--muted);margin:0 2px 5px}
+.lang-toggle{display:flex;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:2px}
+.lang-toggle button{flex:1;border:0;background:none;padding:5px;border-radius:6px;cursor:pointer;font-size:12px;color:var(--text-2)}
+.lang-toggle button.on{background:#fff;color:var(--text);box-shadow:var(--shadow);font-weight:600}
+.who{font-size:12px;color:var(--text-2);cursor:pointer}
+.store-mode{font-size:11px;color:var(--muted)}
+main{flex:1;min-width:0;padding:22px 28px 60px}
+.page-h{display:flex;align-items:center;gap:12px;margin-bottom:18px;flex-wrap:wrap}
+.page-h h1{font-size:20px;margin:0;font-weight:700}
+.page-h .sub{color:var(--text-2);font-size:13px}
+.page-h .sp{flex:1}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
+.card-h{display:flex;align-items:center;gap:8px;padding:14px 16px 0}
+.card-h h3{margin:0;font-size:14px;font-weight:600}
+.card-h .sp{flex:1}
+.card-b{padding:14px 16px 16px}
+.grid{display:grid;gap:16px}
+.kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin-bottom:16px}
+.kpi{padding:14px 16px;cursor:pointer}
+.kpi:hover{border-color:#cfd6df}
+.kpi .l{font-size:12px;color:var(--text-2);font-weight:500}
+.kpi .v{font-size:22px;font-weight:700;margin-top:4px;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.kpi .s{font-size:12px;color:var(--muted);margin-top:2px}
+.kpi.bad .v{color:var(--bad)} .kpi.warn .v{color:var(--warn)}
+.row2{display:grid;grid-template-columns:1.25fr 1fr;gap:16px;margin-bottom:16px}
+.row3{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+@media (max-width:1300px){.kpis{grid-template-columns:repeat(3,1fr)}}
+@media (max-width:1000px){.row2,.row3{grid-template-columns:1fr}.nav{width:64px}.brand div:last-child,#navlinks a span.t,.nav-foot .who,.store-mode{display:none}.lang-toggle{flex-direction:column}.lang-lbl{display:none}.lang-top{padding:0 6px 10px}}
+/* aging bar */
+.agebar{display:flex;height:28px;border-radius:6px;overflow:hidden;gap:2px;background:var(--surface)}
+.agebar div{height:100%;min-width:2px}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:12px}
+.legend .it{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text-2);cursor:pointer}
+.legend .sw{width:10px;height:10px;border-radius:3px}
+.legend b{color:var(--text);font-weight:600;font-variant-numeric:tabular-nums}
+/* hbar list */
+.hbars{display:flex;flex-direction:column;gap:7px}
+.hb{display:grid;grid-template-columns:150px 1fr 100px;align-items:center;gap:10px;font-size:13px;cursor:pointer;padding:2px 0}
+.hb:hover .nm{color:var(--accent-d)}
+.hb .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text)}
+.hb .tr{height:14px;background:var(--surface-2);border-radius:4px;position:relative;overflow:hidden}
+.hb .tr i{position:absolute;left:0;top:0;bottom:0;border-radius:0 4px 4px 0;background:var(--s1)}
+.hb .vv{text-align:right;font-variant-numeric:tabular-nums;color:var(--text-2)}
+/* tables */
+.tbl-wrap{overflow:auto;max-width:100%}
+table.t{width:100%;border-collapse:collapse;font-size:13px}
+table.t th{position:sticky;top:0;background:var(--surface-2);text-align:left;font-weight:600;color:var(--text-2);font-size:12px;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap;z-index:1}
+table.t td{padding:8px 10px;border-bottom:1px solid var(--line-2);vertical-align:middle;white-space:nowrap}
+table.t tr:hover td{background:#fafbfc}
+table.t tr.click{cursor:pointer}
+table.t .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+table.t tfoot td{font-weight:700;background:var(--surface-2);border-top:1px solid var(--line)}
+table.t td.muted,.muted{color:var(--muted)}
+table.t td.wrap{max-width:280px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tbl-scroll{max-height:calc(100vh - 230px);overflow:auto}
+/* badges */
+.b{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;white-space:nowrap}
+.b.paid{background:var(--good-l);color:var(--good)}
+.b.open{background:var(--accent-l);color:var(--accent-d)}
+.b.partial{background:var(--info-l);color:#4338ca}
+.b.overdue{background:var(--bad-l);color:var(--bad)}
+.b.review{background:var(--warn-l);color:var(--warn)}
+.b.ic{background:#f3f4f6;color:#374151}
+/* controls */
+.btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:#fff;padding:7px 13px;border-radius:8px;cursor:pointer;font-weight:500;font-size:13px;white-space:nowrap}
+.btn:hover{background:var(--surface-2)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.pri:hover{background:var(--accent-d)}
+.btn.danger{color:var(--bad);border-color:#f3c4c4}
+.btn.danger:hover{background:var(--bad-l)}
+.btn.sm{padding:4px 9px;font-size:12px}
+.btn.ghost{border-color:transparent;background:none}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.inp,select.inp,textarea.inp{border:1px solid var(--line);border-radius:8px;padding:7px 10px;background:#fff;min-width:0}
+.inp:focus{outline:2px solid var(--accent-l);border-color:var(--accent)}
+.filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.filters .inp{height:34px}
+.chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text-2);cursor:pointer;user-select:none}
+.form{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px 14px}
+.form .f{display:flex;flex-direction:column;gap:5px;min-width:0}
+.form .inp{width:100%}
+.form .f.full{grid-column:1/-1}
+.form label{font-size:12px;color:var(--text-2);font-weight:500;display:flex;align-items:center;gap:6px}
+.form .hint{font-size:11px;color:var(--muted)}
+.conf{width:8px;height:8px;border-radius:50%;display:inline-block}
+.conf.hi{background:#16a34a}.conf.mid{background:#eab308}.conf.lo{background:#d1d5db}
+/* modal */
+.mbg{position:fixed;inset:0;background:rgba(17,24,39,.35);display:flex;align-items:flex-start;justify-content:center;padding:50px 16px;z-index:50;overflow:auto}
+.modal{background:#fff;border-radius:12px;width:100%;max-width:640px;box-shadow:0 20px 50px rgba(0,0,0,.2)}
+.modal.wide{max-width:900px}
+.modal-h{display:flex;align-items:center;padding:16px 20px;border-bottom:1px solid var(--line)}
+.modal-h h3{margin:0;font-size:16px}
+.modal-h .x{margin-left:auto;border:0;background:none;font-size:20px;cursor:pointer;color:var(--muted)}
+.modal-b{padding:18px 20px}
+.modal-f{display:flex;gap:8px;padding:14px 20px;border-top:1px solid var(--line);background:var(--surface-2);border-radius:0 0 12px 12px}
+.modal-f .sp{flex:1}
+#toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;z-index:99}
+#toast div{background:#111827;color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;box-shadow:0 8px 20px rgba(0,0,0,.2)}
+#toast div.err{background:var(--bad)}
+/* register */
+label.drop{display:block}
+.drop{border:2px dashed #cdd5df;border-radius:12px;padding:28px;text-align:center;color:var(--text-2);background:#fff;cursor:pointer;transition:.15s}
+.drop.on,.drop:hover{border-color:var(--accent);background:var(--accent-l)}
+.drop b{color:var(--text)}
+.reg{display:grid;grid-template-columns:240px 1fr 420px;gap:14px;margin-top:14px;align-items:start}
+@media (max-width:1300px){.reg{grid-template-columns:200px 1fr}.reg .regform{grid-column:1/-1}}
+.queue{display:flex;flex-direction:column;gap:4px;max-height:calc(100vh - 260px);overflow:auto;padding:8px}
+.qi{padding:8px 10px;border-radius:8px;cursor:pointer;border:1px solid transparent;font-size:12px}
+.qi:hover{background:var(--surface-2)}
+.qi.on{border-color:var(--accent);background:var(--accent-l)}
+.qi .fn{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text)}
+.qi .st{color:var(--text-2);margin-top:2px;display:flex;gap:6px;align-items:center}
+.preview{height:calc(100vh - 230px);min-height:480px;overflow:hidden;display:flex}
+.preview .imgwrap{flex:1;border-radius:var(--r);background:#eef0f3;overflow:auto;padding:10px;display:flex;flex-direction:column;gap:10px;align-items:center}
+.preview img{max-width:100%;box-shadow:var(--shadow);background:#fff}
+.preview .pv-bar{display:flex;gap:6px;position:sticky;top:0;align-self:flex-end}
+.empty{padding:40px;text-align:center;color:var(--muted)}
+.warnbox{background:var(--warn-l);color:var(--warn);border-radius:8px;padding:9px 12px;font-size:12px;margin-bottom:10px}
+.errbox{background:var(--bad-l);color:var(--bad);border-radius:8px;padding:9px 12px;font-size:12px;margin-bottom:10px}
+.okbox{background:var(--good-l);color:var(--good);border-radius:8px;padding:9px 12px;font-size:12px;margin-bottom:10px}
+details.raw summary{cursor:pointer;color:var(--text-2);font-size:12px}
+details.raw pre{white-space:pre-wrap;font-size:11px;background:var(--surface-2);padding:10px;border-radius:8px;max-height:260px;overflow:auto}
+.spin{width:12px;height:12px;border:2px solid #cbd5e1;border-top-color:var(--accent);border-radius:50%;display:inline-block;animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.vhead{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:14px}
+.tabs button{border:0;background:none;padding:9px 14px;cursor:pointer;color:var(--text-2);font-weight:500;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabs button.on{color:var(--accent-d);border-color:var(--accent)}
+.alloc td .inp{width:110px;text-align:right;padding:4px 8px}
+.pill-sum{display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:var(--text-2);margin-top:10px}
+.pill-sum b{color:var(--text);font-variant-numeric:tabular-nums}
+.link{color:var(--accent-d);cursor:pointer;text-decoration:none}
+.link:hover{text-decoration:underline}
+.set-sec{margin-bottom:16px}
+.set-sec .card-b p{margin:0 0 10px;color:var(--text-2);font-size:13px}
+.right{text-align:right}
+.chart-box{position:relative;height:260px}
+/* roles */
+body.ro .ed,.mbg.ro .ed{display:none!important}
+body:not(.isadm) .adm{display:none!important}
+/* login gate */
+#gate{position:fixed;inset:0;background:var(--bg);z-index:200;display:flex;align-items:center;justify-content:center;padding:16px}
+.gate-card{background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 10px 30px rgba(16,24,40,.08);padding:34px 30px;max-width:420px;width:100%;text-align:center}
+.gate-card h2{margin:0 0 8px;font-size:19px}
+.gate-card p{color:var(--text-2);font-size:13px;margin:0 0 20px}
+
+</style>
+</head>
+<body>
+<div id="app">
+  <aside class="nav">
+    <div class="brand"><div class="logo">AR</div><div><div class="brand-t">JNFAM</div><div class="brand-s">Accounts Receivable</div></div></div>
+    <div class="lang-top"><span class="lang-lbl" id="langLbl">언어 · Language</span><div class="lang-toggle"><button data-lang="ko">한국어</button><button data-lang="en">English</button></div></div>
+    <nav id="navlinks"></nav>
+    <div class="nav-foot">
+      <div class="who" id="who"></div>
+      <div class="store-mode" id="storeMode"></div>
+    </div>
+  </aside>
+  <main id="view"></main>
+</div>
+<div id="modal-root"></div>
+<div id="toast"></div>
+<script>
+'use strict';
+/* =====================================================================
+   JNFAM AR Manager — core (utils, i18n, data store, AP calculations)
+   Data layer is behind `Store` so it can be swapped from IndexedDB
+   (local stage) to Firebase Firestore/Storage (online stage) later.
+   ===================================================================== */
+
+/* ---------- utils ---------- */
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const r2 = n => Math.round((+n || 0) * 100) / 100;
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const pad = n => String(n).padStart(2, '0');
+const ymd = d => d ? `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` : '';
+const todayStr = () => ymd(new Date());
+const toDate = s => { if (!s) return null; const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+const addDays = (s, n) => { const d = toDate(s); d.setDate(d.getDate() + n); return ymd(d); };
+const daysBetween = (a, b) => Math.round((toDate(b) - toDate(a)) / 864e5);
+const validYMD = (y, m, d) => { const dt = new Date(y, m - 1, d); return dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d; };
+const money = (n, dec = 2) => {
+  n = +n || 0; const neg = n < 0;
+  const s = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+  return (neg ? '-$' : '$') + s;
+};
+const moneyK = n => { n = +n || 0; const a = Math.abs(n); const s = a >= 1e6 ? (a / 1e6).toFixed(2) + 'M' : a >= 1e4 ? (a / 1e3).toFixed(1) + 'K' : a.toLocaleString('en-US', { maximumFractionDigits: 0 }); return (n < 0 ? '-$' : '$') + s; };
+const normKey = s => String(s || '').toLowerCase().replace(/[^a-z0-9가-힣]+/g, '');
+const normWords = s => ' ' + String(s || '').toLowerCase().replace(/[^a-z0-9가-힣]+/g, ' ').replace(/\s+/g, ' ').trim() + ' ';
+const fmtD = s => s || '';
+const debounce = (fn, ms = 200) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+function toast(msg, err) { const d = document.createElement('div'); d.textContent = msg; if (err) d.className = 'err'; $('#toast').appendChild(d); setTimeout(() => d.remove(), err ? 5000 : 2600); }
+function download(name, blob) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000); }
+const fileToB64 = blob => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.onerror = rej; r.readAsDataURL(blob); });
+
+/* ---------- i18n ---------- */
+const L = {
+  dashboard: ['Dashboard', '대시보드'], summary: ['AR Aging', 'AR 현황(Aging)'], invoices: ['Invoices', '인보이스'], register: ['Register Invoice', '인보이스 등록'],
+  payments: ['Receipts', '입금 내역'], vendors: ['Customers', '고객'], settings: ['Settings', '설정'],
+  asOf: ['As of', '기준일'], inclIC: ['Include other receivables', '기타 미수금 포함'], totalAP: ['Total AR Outstanding', '총 미수금'],
+  overdue: ['Overdue', '연체'], due7: ['Due in 7 days', '7일 내 입금 예정'], due30: ['Due in 30 days', '30일 내 입금 예정'], paidMTD: ['Received this month', '이번 달 입금액'],
+  needReview: ['Needs review', '검토 필요'], invoicesN: ['{n} invoices', '{n}건'], agingTitle: ['Aging (by days past due)', 'Aging (연체일 기준)'],
+  current: ['Current', 'Current'], b1: ['1–30', '1–30'], b2: ['31–60', '31–60'], b3: ['61–90', '61–90'], b4: ['> 90', '> 90'], total: ['Total', '합계'],
+  topVendors: ['Top customers by balance', '고객별 미수 잔액'], monthly: ['Monthly invoiced vs received', '월별 청구 vs 입금'],
+  invoiced: ['Invoiced', '청구'], paid: ['Received', '입금'], byAccount: ['Invoiced by product (YTD)', '품목별 청구액 (연누계)'],
+  overdueList: ['Overdue invoices', '연체 인보이스'], upcoming: ['Due in next 14 days', '14일 내 입금 예정'], noData: ['No data', '데이터 없음'],
+  vendor: ['Customer', '고객'], invNo: ['Invoice No.', '인보이스 번호'], invDate: ['Invoice date', '인보이스 일자'], dueDate: ['Due date', '입금기한'],
+  amount: ['Amount', '금액'], open: ['Open', '미수'], memo: ['Memo', '메모'], account: ['Product', '품목'], status: ['Status', '상태'], days: ['Days', '일수'],
+  st_paid: ['Paid', '입금완료'], st_open: ['Open', '미수'], st_partial: ['Partial', '부분입금'], st_overdue: ['Overdue', '연체'], st_review: ['Review', '검토'],
+  all: ['All', '전체'], search: ['Search…', '검색…'], from: ['From', '시작'], to: ['To', '종료'], newInvoice: ['New invoice', '인보이스 추가'],
+  recordPayment: ['Record receipt', '입금 등록'], payFor: ['Receive selected', '선택 입금 처리'], exportXlsx: ['Export Excel', '엑셀 내보내기'],
+  edit: ['Edit', '수정'], del: ['Delete', '삭제'], save: ['Save', '저장'], cancel: ['Cancel', '취소'], close: ['Close', '닫기'],
+  terms: ['Terms', '결제조건'], group: ['Type', '구분'], operating: ['Customer', '일반 고객'], intercompany: ['Other receivable', '기타 미수금'],
+  balance: ['Balance', '잔액'], unapplied: ['Unapplied', '미배분 입금'], openCount: ['Open inv.', '미수 건'],
+  lastInv: ['Last invoice', '최근 인보이스'], addVendor: ['Add customer', '고객 추가'], hideZero: ['Hide zero balance', '잔액 0 숨기기'],
+  method: ['Method', '입금방법'], ref: ['Reference', '참조번호'], payDate: ['Receipt date', '입금일'], fee: ['Adjustment', '조정액'],
+  applied: ['Applied', '배분액'], appliedTo: ['Applied to', '배분 인보이스'], autoAlloc: ['Auto-allocate (oldest first)', '자동 배분 (오래된 순)'],
+  note: ['Note', '비고'], attachment: ['Attachment', '원본 파일'], view: ['View', '보기'], removeFile: ['Remove file', '파일 삭제'],
+  aliases: ['Detection keywords', '인식 키워드'], aliasesHint: ['Words on our invoice (Bill To) that identify this customer (comma-separated)', '인보이스 Bill To 등에서 고객을 식별할 단어 (쉼표 구분)'],
+  invRegex: ['Invoice No. pattern (regex)', '인보이스 번호 패턴 (정규식)'], invRegexHint: ['Optional. e.g. JAIN-\\d{6}[A-Z]*', '선택사항. 예: JAIN-\\d{6}[A-Z]*'],
+  termsNet: ['Net (days)', 'Net (일수)'], termsDom: ['Fixed day of month', '매월 고정일'], termsRcpt: ['Due on receipt', '수령 즉시'],
+  name: ['Name', '고객명'], active: ['Active', '사용'], ledger: ['Ledger', '거래 원장'], vendorInfo: ['Customer settings', '고객 설정'],
+  charge: ['Invoice', '청구'], payment: ['Receipt', '입금'], type: ['Type', '구분'], date: ['Date', '일자'],
+  dropHere: ['Drop our invoice PDFs / images here, or click to select', '발행 인보이스 PDF·이미지를 끌어다 놓거나 클릭해서 선택'],
+  dropSub: ['Multiple files OK · Fields are read only — the file itself is not stored', '여러 파일 가능 · 내용만 읽어 등록하고 파일은 저장하지 않습니다'],
+  parsing: ['Reading…', '읽는 중…'], ocr: ['OCR…', 'OCR 중…'], ready: ['Ready to save', '저장 대기'], saved: ['Saved', '저장됨'], failed: ['Failed', '실패'], skipped: ['Skipped', '건너뜀'],
+  aiRead: ['Re-read with AI', 'AI로 다시 읽기'], aiNoKey: ['Set the Claude API key in Settings first.', '설정에서 Claude API 키를 먼저 입력하세요.'],
+  dup: ['Possible duplicate: {x}', '중복 가능성: {x}'], saveNext: ['Save & next', '저장 후 다음'], skip: ['Skip', '건너뛰기'],
+  rawText: ['Extracted text', '추출된 텍스트'], selVendor: ['— select customer —', '— 고객 선택 —'], newVendorQ: ['Customer not found. Create new customer?', '고객이 없습니다. 새 고객으로 추가할까요?'],
+  required: ['Customer, invoice date and amount are required.', '고객, 인보이스 일자, 금액은 필수입니다.'],
+  confirmDel: ['Delete this item?', '삭제할까요?'], deleted: ['Deleted', '삭제됨'], savedT: ['Saved', '저장되었습니다'],
+  lang: ['Language', '언어'], yourName: ['Your name (recorded on changes)', '사용자 이름 (변경 기록용)'],
+  aiSec: ['AI invoice reading (Claude API)', 'AI 인보이스 읽기 (Claude API)'], apiKey: ['API key', 'API 키'], model: ['Model', '모델'],
+  aiDesc: ['Used only when you press "Re-read with AI".', '"AI로 다시 읽기"를 누를 때만 사용됩니다.'],
+  testKey: ['Test', '연결 테스트'], selfNames: ['Our company names (ignored when detecting customer)', '자사명 (고객 인식 시 제외)'],
+  defTerms: ['Default terms for customers (Net days)', '고객 기본 결제조건 (Net 일수)'],
+  dataSec: ['Data', '데이터'], importXlsx: ['Import AR Excel (2026_AR.xlsx format)', 'AR 엑셀 가져오기 (2026_AR.xlsx 형식)'],
+  importDesc: ['Reads the AR total sheet (customers) and every customer sheet (invoices & receipts). Lump-sum receipts are allocated to invoices automatically. Replaces current data.', 'AR total 시트(고객)와 고객별 시트(인보이스·입금)를 읽습니다. 여러 인보이스를 한 번에 받은 입금은 자동 배분합니다. 현재 데이터를 대체합니다.'],
+  backup: ['Backup (JSON)', '백업 (JSON)'], restore: ['Restore backup', '백업 복원'], inclFiles: ['Include attachments', '첨부파일 포함'],
+  resetAll: ['Delete all data', '전체 데이터 삭제'], resetQ: ['Delete ALL AR data? This cannot be undone.', '모든 AR 데이터를 삭제할까요? 되돌릴 수 없습니다.'],
+  importReport: ['Import result', '가져오기 결과'], excelBal: ['Excel balance', '엑셀 잔액'], appBal: ['App balance', '프로그램 잔액'], diff: ['Diff', '차이'],
+  welcome: ['No data yet. Import the AR Excel file in Settings, or add customers and invoices.', '데이터가 없습니다. 설정에서 AR 엑셀을 가져오거나 고객·인보이스를 추가하세요.'],
+  goSettings: ['Go to Settings', '설정으로 이동'], local: ['Local mode · data stored in this browser', '로컬 모드 · 이 브라우저에 저장'],
+  reviewReason: ['Review reason', '검토 사유'], clearReview: ['Mark as reviewed', '검토 완료'], showing: ['Showing {n} of {m}', '{m}건 중 {n}건 표시'],
+  selSameVendor: ['Select open invoices from one customer.', '같은 고객의 미수 인보이스를 선택하세요.'],
+  autoDue: ['Auto from customer terms: {d}', '고객 결제조건 기준 자동: {d}'], overrideDue: ['Override', '직접 입력'],
+  payHistory: ['Receipts', '입금 이력'], noPay: ['No receipts', '입금 없음'], unappliedNote: ['Not applied to an invoice — counted against the oldest open invoices for aging.', '인보이스에 배분되지 않은 금액 — Aging 계산 시 오래된 미수 인보이스부터 차감'],
+  paysN: ['{n} receipt(s)', '{n}건 입금'],
+  fileNotFound: ['File not found', '파일을 찾을 수 없습니다'], regexErr: ['Invalid regex pattern', '정규식 형식 오류'], vendorNotFound: ['Customer not found', '고객을 찾을 수 없습니다'],
+  inactive: ['Inactive', '비활성'], notBackup: ['Not an AR backup file', 'AR 백업 파일이 아닙니다'],
+  countsLine: ['{v} customers · {i} invoices · {p} receipts', '고객 {v}곳 · 인보이스 {i}건 · 입금 {p}건'],
+  currency: ['Currency', '통화'], morePages: ['+{n} more pages', '+{n}페이지 더 있음'], storageErr: ['Storage error', '저장소 오류'], noDate: ['No date', '일자 없음'],
+  allYears: ['All', '전체'], year: ['Year', '연도'], vendorsN: ['{n} customers', '{n}개 고객'], dayN: ['{n}d', '{n}일'],
+  conf_hi: ['Found by label', '라벨로 인식'], conf_mid: ['Guessed', '추정'], conf_lo: ['Not found', '인식 못함'],
+  manualEntry: ['Manual entry (no file)', '파일 없이 직접 입력'], saving: ['Saving…', '저장 중…'], aiDone: ['AI reading complete', 'AI 읽기 완료'],
+  parsedBy: ['Parsed by', '인식 방식'], rules: ['Rules', '규칙'], ocrRules: ['OCR + rules', 'OCR + 규칙'], ai: ['AI', 'AI'],
+  clearDone: ['Clear finished', '완료 항목 정리'], invCount: ['Invoices', '인보이스 수'], last: ['Last', '최근'],
+  vendorReq: ['Select a customer', '고객을 선택하세요'], amtReq: ['Enter an amount', '금액을 입력하세요'], overAlloc: ['Allocated more than the receipt amount', '배분액이 입금액을 초과합니다'],
+  importDone: ['Import complete', '가져오기 완료'], restoreQ: ['Restore will replace all current data. Continue?', '복원하면 현재 데이터가 대체됩니다. 계속할까요?'],
+  apSummaryNote: ['Aging buckets use days past due date. Unapplied receipts reduce the oldest open invoices first.', 'Aging은 입금기한 경과일 기준. 미배분 입금액은 오래된 인보이스부터 차감.'],
+  invoiceDetail: ['Invoice', '인보이스'], paymentDetail: ['Receipt', '입금'], acctDefault: ['Default product', '기본 품목'],
+  notes: ['Notes', '메모'], newVendor: ['New customer', '신규 고객'], vendorExists: ['A customer with this name already exists.', '같은 이름의 고객이 이미 있습니다.'],
+  hasInvoices: ['This customer has invoices/receipts. Delete them first or set inactive.', '인보이스/입금 내역이 있는 고객입니다. 먼저 삭제하거나 비활성으로 설정하세요.'],
+  methods_ACH: ['ACH', 'ACH'], methods_Check: ['Check', '수표'], methods_Wire: ['Wire', '송금(Wire)'], methods_Card: ['Credit card', '신용카드'], methods_Offset: ['Offset / netting', '상계'], methods_Other: ['Other', '기타'],
+  poNo: ['PO No.', 'PO 번호'], interest: ['Interest', '이자'], endCustomer: ['End customer', '최종 고객'],
+  adjHint: ['+ write off a short payment (bank fee, 1¢ rounding) · − record an overpayment', '+ 덜 받은 금액 탕감(은행수수료·1센트 반올림) · − 초과 입금'],
+};
+let LANG = (() => { try { const v = JSON.parse(localStorage.getItem('ar.lang')); return v === 'en' ? 'en' : 'ko'; } catch { return 'ko'; } })();
+const t = (k, v) => { let s = (L[k] || [k, k])[LANG === 'ko' ? 1 : 0]; if (v) for (const x in v) s = s.replace('{' + x + '}', v[x]); return s; };
+const METHODS = ['ACH', 'Wire', 'Check', 'Card', 'Offset', 'Other'];
+
+
+/* ---------- personal settings (per browser) ---------- */
+const Pref = {
+  get(k, d) { try { const v = localStorage.getItem('ar.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('ar.' + k, JSON.stringify(v)); } catch { } },
+};
+
+/* ---------- data store (IndexedDB adapter) ----------
+   Interface used by the app (keep identical for the Firebase adapter):
+     init() -> loads all collections into S
+     put(col, doc) / putMany(col, docs) / del(col, id) / clear()
+     putFile(id, blob, meta) / getFile(id) / delFile(id)
+   Collections: vendors(=customers), invoices, payments(=receipts), meta            */
+const COLS = ['vendors', 'invoices', 'payments', 'meta'];
+const S = { vendors: [], invoices: [], payments: [], meta: [] };
+const LocalStore = {
+  db: null, mode: 'local',
+  open() {
+    return new Promise((res, rej) => {
+      const rq = indexedDB.open('jnfam-ar', 1);
+      rq.onupgradeneeded = () => { const db = rq.result; for (const c of [...COLS, 'files']) if (!db.objectStoreNames.contains(c)) db.createObjectStore(c, { keyPath: 'id' }); };
+      rq.onsuccess = () => { this.db = rq.result; res(); };
+      rq.onerror = () => rej(rq.error);
+    });
+  },
+  tx(col, mode = 'readonly') { return this.db.transaction(col, mode).objectStore(col); },
+  req(r) { return new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); },
+  async init() { await this.open(); for (const c of COLS) S[c] = await this.req(this.tx(c).getAll()); },
+  stamp(doc) { doc.updatedAt = new Date().toISOString(); doc.updatedBy = currentUserName(); if (!doc.createdAt) { doc.createdAt = doc.updatedAt; doc.createdBy = doc.updatedBy; } return doc; },
+  async put(col, doc, noStamp) {
+    if (!doc.id) doc.id = uid(); if (!noStamp) this.stamp(doc);
+    await this.req(this.tx(col, 'readwrite').put(doc));
+    const i = S[col].findIndex(x => x.id === doc.id); if (i >= 0) S[col][i] = doc; else S[col].push(doc);
+    return doc;
+  },
+  async putMany(col, docs) {
+    await new Promise((res, rej) => { const tx = this.db.transaction(col, 'readwrite'); const st = tx.objectStore(col); docs.forEach(d => { if (!d.id) d.id = uid(); st.put(d); }); tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+    const map = new Map(S[col].map(x => [x.id, x])); docs.forEach(d => map.set(d.id, d)); S[col] = [...map.values()];
+  },
+  async del(col, id) { await this.req(this.tx(col, 'readwrite').delete(id)); S[col] = S[col].filter(x => x.id !== id); },
+  async clear(withFiles = true) { for (const c of [...COLS, ...(withFiles ? ['files'] : [])]) { await this.req(this.tx(c, 'readwrite').clear()); if (S[c]) S[c] = []; } },
+  async putFile(id, blob, meta = {}) { await this.req(this.tx('files', 'readwrite').put({ id, blob, ...meta })); return id; },
+  async getFile(id) { return id ? this.req(this.tx('files').get(id)) : null; },
+  async delFile(id) { if (id) await this.req(this.tx('files', 'readwrite').delete(id)); },
+  async allFiles() { return this.req(this.tx('files').getAll()); },
+};
+let Store = LocalStore;
+const currentUserName = () => (typeof AUTH !== 'undefined' && AUTH.email) ? (AUTH.name || AUTH.email) : Pref.get('user', '');
+const shared = (k, d) => { const m = S.meta.find(x => x.id === k); return m ? m.value : d; };
+const setShared = (k, v) => Store.put('meta', { id: k, value: v });
+
+/* ---------- lookups ---------- */
+const vendorById = id => S.vendors.find(v => v.id === id);
+const vName = id => vendorById(id)?.name || '—';
+const isIC = v => v && v.group === 'intercompany';
+
+/* ---------- terms / due date ---------- */
+function termsLabel(tr) {
+  if (!tr) return '';
+  if (tr.type === 'dom') return LANG === 'ko' ? `매월 ${tr.day}일` : `Every ${tr.day}${['th', 'st', 'nd', 'rd'][(tr.day % 10 < 4 && Math.floor(tr.day / 10) !== 1) ? tr.day % 10 : 0]}`;
+  if (tr.type === 'receipt') return t('termsRcpt');
+  return `Net ${tr.days ?? 30}`;
+}
+function calcDue(invDate, tr) {
+  if (!invDate) return '';
+  tr = tr || { type: 'net', days: shared('defTerms', 30) };
+  if (tr.type === 'receipt') return invDate;
+  if (tr.type === 'dom') {
+    const d = toDate(invDate); const day = Math.min(31, Math.max(1, +tr.day || 25));
+    let c = new Date(d.getFullYear(), d.getMonth(), 1);
+    for (let i = 0; i < 3; i++) { const last = new Date(c.getFullYear(), c.getMonth() + 1, 0).getDate(); const cand = new Date(c.getFullYear(), c.getMonth(), Math.min(day, last)); if (cand >= d) return ymd(cand); c = new Date(c.getFullYear(), c.getMonth() + 1, 1); }
+  }
+  return addDays(invDate, +tr.days || 0);
+}
+const invDue = inv => inv.dueDate || calcDue(inv.invoiceDate, vendorById(inv.vendorId)?.terms);
+
+/* ---------- AR engine ----------
+   compute({asOf, inclIC}) -> per-invoice open balances, per-vendor balances,
+   aging buckets. Receipts dated after asOf are ignored; invoices dated
+   after asOf are ignored. Unapplied credit (receipt + adjustment - allocations)
+   is applied FIFO to the customer's oldest open invoices for aging.            */
+const BUCKETS = ['current', 'b1', 'b2', 'b3', 'b4'];
+const bucketOf = dpd => dpd <= 0 ? 0 : dpd <= 30 ? 1 : dpd <= 60 ? 2 : dpd <= 90 ? 3 : 4;
+/* receipt: amount + adjustment(write-off) is what can be applied to invoices */
+function payUnapplied(p) { return r2((+p.amount || 0) + (+p.fee || 0) - (p.allocations || []).reduce((s, a) => s + (+a.amount || 0), 0)); }
+function compute(opt = {}) {
+  const asOf = opt.asOf || todayStr();
+  const inclIC = opt.inclIC !== false;
+  const vOK = id => { const v = vendorById(id); return inclIC || !isIC(v); };
+  const applied = new Map(); const payByInv = new Map(); const unappliedByV = new Map();
+  for (const p of S.payments) {
+    if (p.date && p.date > asOf) continue;
+    for (const a of p.allocations || []) { applied.set(a.invoiceId, r2((applied.get(a.invoiceId) || 0) + (+a.amount || 0))); if (!payByInv.has(a.invoiceId)) payByInv.set(a.invoiceId, []); payByInv.get(a.invoiceId).push(p); }
+    const u = payUnapplied(p); if (Math.abs(u) > 0.004) unappliedByV.set(p.vendorId, r2((unappliedByV.get(p.vendorId) || 0) + u));
+  }
+  const inv = new Map(); const byV = new Map();
+  const vRow = id => { if (!byV.has(id)) byV.set(id, { vendorId: id, invoiced: 0, paid: 0, balance: 0, aging: [0, 0, 0, 0, 0], open: 0, credit: 0, overdue: 0, lastInv: '' }); return byV.get(id); };
+  const sorted = S.invoices.filter(i => (!i.invoiceDate || i.invoiceDate <= asOf)).sort((a, b) => (a.invoiceDate || '').localeCompare(b.invoiceDate || '') || (a.seq || 0) - (b.seq || 0));
+  for (const i of sorted) {
+    const ap = applied.get(i.id) || 0; const open = r2((+i.amount || 0) - ap); const due = invDue(i);
+    const dpd = due ? daysBetween(due, asOf) : 0;
+    inv.set(i.id, { applied: ap, open, due, dpd, agingOpen: open, payments: payByInv.get(i.id) || [] });
+    const r = vRow(i.vendorId); r.invoiced = r2(r.invoiced + (+i.amount || 0)); if (i.invoiceDate > r.lastInv) r.lastInv = i.invoiceDate;
+  }
+  // FIFO credit for aging
+  for (const [vid, credit] of unappliedByV) {
+    let c = credit; const r = vRow(vid); r.credit = credit;
+    if (c > 0) for (const i of sorted) { if (i.vendorId !== vid) continue; const x = inv.get(i.id); if (x.agingOpen <= 0) continue; const take = Math.min(c, x.agingOpen); x.agingOpen = r2(x.agingOpen - take); c = r2(c - take); if (c <= 0) break; }
+    r.leftoverCredit = c > 0 ? c : 0;
+  }
+  for (const i of sorted) {
+    const x = inv.get(i.id); const r = vRow(i.vendorId);
+    if (x.open > 0.004) r.open++;
+    if (x.agingOpen > 0.004) { r.aging[bucketOf(x.dpd)] = r2(r.aging[bucketOf(x.dpd)] + x.agingOpen); if (x.dpd > 0) r.overdue = r2(r.overdue + x.agingOpen); }
+    else if (x.agingOpen < -0.004) r.aging[0] = r2(r.aging[0] + x.agingOpen);
+  }
+  for (const r of byV.values()) {
+    if (r.leftoverCredit) r.aging[0] = r2(r.aging[0] - r.leftoverCredit);
+    if (r.credit < 0) r.aging[0] = r2(r.aging[0] - r.credit); // negative unapplied (rare): adds to current
+    r.balance = r2(r.aging.reduce((s, x) => s + x, 0));
+  }
+  for (const p of S.payments) { if (p.date && p.date > asOf) continue; vRow(p.vendorId).paid = r2(vRow(p.vendorId).paid + (+p.amount || 0)); }
+  const vendors = [...byV.values()].filter(r => vOK(r.vendorId));
+  const tot = { balance: 0, aging: [0, 0, 0, 0, 0], overdue: 0 };
+  for (const r of vendors) { tot.balance = r2(tot.balance + r.balance); r.aging.forEach((x, k) => tot.aging[k] = r2(tot.aging[k] + x)); tot.overdue = r2(tot.overdue + r.overdue); }
+  return { asOf, inclIC, inv, byV, vendors, tot, vOK };
+}
+function invStatus(i, x) {
+  if (!x) return 'open';
+  if (x.open <= 0.004) return 'paid';
+  if (x.dpd > 0 && x.agingOpen > 0.004) return 'overdue';
+  if (x.applied > 0) return 'partial';
+  return 'open';
+}
+const badge = st => `<span class="b ${st}">${t('st_' + st)}</span>`;
+
+/* =====================================================================
+   Products & invoice-number helpers
+   ===================================================================== */
+const PRODUCTS = ['HF', 'HCl', 'HNO3', 'H2SO4', 'KOH', 'ICP-MS', 'IBC', 'Trucking', 'Parts & service', 'Duty refund', 'Other'];
+const PRODUCT_KO = { 'Parts & service': '부품·서비스', 'Duty refund': '관세 환급', Other: '기타', Trucking: '운송비' };
+const prodLabel = p => p ? (LANG === 'ko' ? (PRODUCT_KO[p] || p) : p) : (LANG === 'ko' ? '미지정' : 'Unassigned');
+function productOf(s) {
+  s = String(s || '');
+  if (/icp/i.test(s)) return 'ICP-MS';
+  if (/hno3/i.test(s)) return 'HNO3';
+  if (/h2so4|sulfuric/i.test(s)) return 'H2SO4';
+  if (/\bhcl\b|hcl\b|hydrochloric/i.test(s)) return 'HCl';
+  if (/\bhf\b|hf\b|hydrofluoric/i.test(s)) return 'HF';
+  if (/koh|potassium hydroxide/i.test(s)) return 'KOH';
+  if (/duty|refund|interest|entry/i.test(s)) return 'Duty refund';
+  if (/truck/i.test(s)) return 'Trucking';
+  if (/ibc|tote/i.test(s)) return 'IBC';
+  if (/diptube|dispense|connector|coupler|cap|wrench|handling|fee|service|part/i.test(s)) return 'Parts & service';
+  return '';
+}
+/* our numbering: JAIN-260824A, JAIN-20260205, JNFAM260306C, JAIN-251210HCL */
+const OUR_INV_RX = /\b(JAIN-?\s?\d{6,8}[A-Z0-9]*|JNFAM-?\d{6}[A-Z]?)\b/i;
+function invNoDate(no) {
+  const m = String(no || '').match(/(?:^|\D)(20\d{6}|\d{6})(?!\d)/); if (!m) return '';
+  const g = m[1]; let y, mo, d;
+  if (g.length === 8) { y = +g.slice(0, 4); mo = +g.slice(4, 6); d = +g.slice(6, 8); } else { y = 2000 + +g.slice(0, 2); mo = +g.slice(2, 4); d = +g.slice(4, 6); }
+  return y >= 2020 && y <= 2040 && validYMD(y, mo, d) ? `${y}-${pad(mo)}-${pad(d)}` : '';
+}
+const invLines = i => (i.lines && i.lines.length) ? i.lines : [{ memo: i.memo, amount: +i.amount || 0, product: i.product || productOf(i.memo + ' ' + i.invoiceNo) }];
+
+/* =====================================================================
+   Excel importer — reads the existing "2026_AR.xlsx" layout
+   ===================================================================== */
+Object.assign(L, {
+  rv_dateFromPayment: ['Invoice date not in invoice No. — used receipt date', '번호에 일자 없음 — 입금일로 대체'],
+  rv_dateFromPrev: ['Invoice date not readable — used previous row date', '일자 인식 불가 — 앞 행 일자로 대체'],
+  rv_noInvoiceNo: ['No invoice number', '인보이스 번호 없음'],
+  rv_noDate: ['No invoice date', '인보이스 일자 없음'],
+  rv_parsed: ['Registered from parsed file — verify', '파일 인식으로 등록 — 확인 필요'],
+  rv_cent: ['Short by a few cents — write off with an adjustment if agreed', '몇 센트 미수 — 합의된 차이면 조정액으로 정리'],
+  pv_noDate: ['Receipt date missing in Excel', '엑셀에 입금일 없음'],
+  pv_lump: ['Lump-sum receipt in Excel — allocated automatically, please check', '엑셀 일괄 입금 — 자동 배분, 확인 필요'],
+  pv_unapplied: ['Part of this receipt could not be matched to an invoice', '일부 금액을 인보이스에 매칭하지 못함'],
+});
+
+const KNOWN_CUSTOMER_HINTS = [
+  { m: /q\s*-?cell/i, aliases: ['Hanwha Qcells', 'Qcells', 'Q CELLS', 'Q-CELLS', 'Hanwha Q'], rx: '' },
+  { m: /jefferson|csi/i, aliases: ['Jefferson', 'CSI'], rx: '' },
+  { m: /korechem/i, aliases: ['Korechem', 'KCI'], rx: '' },
+  { m: /suniva/i, aliases: ['Suniva'], rx: '' },
+  { m: /duty|refund|intrest|interest/i, aliases: ['Customs', 'CBP'], rx: '', other: true },
+];
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+async function importWorkbook(file) {
+  const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellFormula: true, cellNF: true });
+  const val = (ws, a) => {
+    const c = ws[a]; if (!c || c.t === 'e' || c.t === 'z') return null;
+    if (c.t === 'n' && c.z && XLSX.SSF.is_date(c.z)) { const p = XLSX.SSF.parse_date_code(c.v); return { date: `${p.y}-${pad(p.m)}-${pad(p.d)}` }; }
+    if (c.t === 'd') { return { date: ymd(new Date(c.v)) }; }
+    return c.v;
+  };
+  const num = v => { if (v == null) return null; if (typeof v === 'number') return v; if (typeof v === 'object') return null; const s = String(v).replace(/[$,\s]/g, ''); return /^-?\d+(\.\d+)?$/.test(s) ? +s : null; };
+  const str = v => v == null ? '' : typeof v === 'object' ? (v.date || '') : String(v).trim();
+  const lastRow = ws => ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']).e.r + 1 : 0;
+  const lastCol = ws => ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']).e.c : 0;
+  /* value of a cell, or of the top-left cell when it sits inside a merged range (e.g. one memo for two invoice rows) */
+  const valM = (ws, a) => { const v = val(ws, a); if (v != null) return v; const p = XLSX.utils.decode_cell(a); const m = (ws['!merges'] || []).find(m => p.r >= m.s.r && p.r <= m.e.r && p.c >= m.s.c && p.c <= m.e.c); return m ? val(ws, XLSX.utils.encode_cell(m.s)) : null; };
+  const colL = i => XLSX.utils.encode_col(i);
+
+  /* --- AR total (customer list) --- */
+  const totName = wb.SheetNames.find(n => /ar\s*total/i.test(n)) || wb.SheetNames[0];
+  const totWs = wb.Sheets[totName];
+  const sheetTotalRow = {};
+  // totals row = "TOTAL" in A/B, or a "Balance" label next to the sums (Qcell sheet has no TOTAL text)
+  for (const n of wb.SheetNames) { if (n === totName) continue; const ws = wb.Sheets[n]; for (let r = 3; r <= lastRow(ws); r++) if (/^total$/i.test(str(val(ws, 'A' + r))) || /^total$/i.test(str(val(ws, 'B' + r))) || ['C', 'D', 'E', 'F', 'G', 'H'].some(c => /^balance$/i.test(str(val(ws, c + r))))) { sheetTotalRow[n] = r; break; } }
+  const custRows = [], taken = new Set();
+  for (let r = 2; r <= lastRow(totWs); r++) {
+    if (/total/i.test(str(val(totWs, 'A' + r)))) break;
+    const name = str(val(totWs, 'B' + r)); if (!name) continue;
+    const f = ((totWs['C' + r] && totWs['C' + r].f) || '').replace(/^\+/, '');
+    const m = f.match(/^'?([^'!]+)'?!\$?[A-Z]+\$?(\d+)$/);
+    let sheet = m && wb.Sheets[m[1]] && !taken.has(m[1]) ? m[1] : '';
+    if (!sheet) { const s2 = wb.SheetNames.find(n => n !== totName && !taken.has(n) && normKey(n) === normKey(name)); if (s2) sheet = s2; }
+    if (sheet) taken.add(sheet);
+    custRows.push({ name, sheet });
+  }
+  for (const n of wb.SheetNames) if (n !== totName && sheetTotalRow[n] && !taken.has(n)) custRows.push({ name: n, sheet: n });
+
+  const defTerms = shared('defTerms', 30);
+  const vendors = custRows.map((r, i) => {
+    const hint = KNOWN_CUSTOMER_HINTS.find(h => h.m.test(r.name) || h.m.test(r.sheet));
+    const aliases = new Set(hint ? hint.aliases : []);
+    if (r.sheet && normKey(r.sheet) !== normKey(r.name)) aliases.add(r.sheet);
+    return { id: 'v_' + uid(), name: r.name, sheet: r.sheet, terms: { type: 'net', days: defTerms }, notes: '', aliases: [...aliases], invRegex: hint ? hint.rx : '', group: hint && hint.other ? 'intercompany' : 'operating', active: true, order: i };
+  });
+
+  /* --- customer sheets --- */
+  const invoices = [], payments = [], report = [];
+  let seq = 0;
+  for (const v of vendors) {
+    if (!v.sheet) continue;
+    const ws = wb.Sheets[v.sheet]; const tr = sheetTotalRow[v.sheet]; if (!tr) continue;
+    // header map (row 1)
+    const H = {}; const lc = lastCol(ws);
+    for (let c = 0; c <= Math.min(lc, 15); c++) {
+      const h = str(val(ws, colL(c) + 1)).toLowerCase(); if (!h) continue;
+      if (/invoice/.test(h) && H.inv == null) H.inv = c; else if (/amount/.test(h) && H.amt == null) H.amt = c; else if (/received/.test(h) && H.rec == null) H.rec = c;
+      else if (/interest/.test(h) && H.int == null) H.int = c; else if (/date/.test(h) && H.date == null) H.date = c; else if (/memo/.test(h) && H.memo == null) H.memo = c;
+    }
+    if (H.inv == null) H.inv = 0; if (H.amt == null) H.amt = 2; if (H.rec == null) H.rec = H.amt + 1; if (H.date == null) H.date = H.rec + 1; if (H.memo == null) H.memo = H.date + 1;
+    // invoice-number column: header is merged over the row-number column → use the next column if this one holds 1,2,3…
+    let numeric = 0, cnt = 0; for (let r = 3; r < tr; r++) { const x = val(ws, colL(H.inv) + r); if (x != null) { cnt++; if (typeof x === 'number') numeric++; } }
+    if (cnt && numeric / cnt > 0.6) H.inv += 1;
+    const maxMapped = Math.max(...Object.values(H));
+    const noteCols = []; for (let c = maxMapped + 1; c <= Math.min(lc, maxMapped + 8); c++) noteCols.push(colL(c));
+    const cell = (k, r) => val(ws, colL(H[k]) + r);
+    let sumC = 0, sumD = 0;
+    const vInv = [], vPay = [];
+    let prevDate = '', lastInv = null;
+    for (let r = 3; r < tr; r++) {
+      const B = str(cell('inv', r)), C = num(cell('amt', r)), D = num(cell('rec', r)), E = cell('date', r);
+      const memo = str(valM(ws, colL(H.memo) + r));
+      const interest = H.int != null ? num(cell('int', r)) : null;
+      const notes = noteCols.map(c => val(ws, c + r)).filter(x => typeof x === 'string' && x.trim()).map(x => x.trim().replace(/^\*/, '')).join(' · ');
+      const rowDate = E && typeof E === 'object' ? E.date : '';
+      if (C) sumC += C; if (D) sumD += D;
+      if (!C && !D) { if (B || memo) lastInv = null; continue; }
+      let inv = null;
+      if (C) {
+        if (!B && lastInv) {           // continuation line of the invoice above (merged invoice-no cell)
+          inv = lastInv; inv.amount = r2(inv.amount + C); inv.lines.push({ memo, amount: r2(C), product: productOf(memo) });
+          inv.memo = inv.lines.map(l => l.memo).filter(Boolean).join(' + ');
+          if (notes) inv.note = [inv.note, notes].filter(Boolean).join(' · ');
+        } else {
+          const flags = [];
+          let date = invNoDate(B);
+          if (!date && rowDate) { date = rowDate; flags.push('dateFromPayment'); }
+          if (!date && prevDate) { date = prevDate; flags.push('dateFromPrev'); }
+          if (!date) flags.push('noDate');
+          if (!B) flags.push('noInvoiceNo');
+          if (date) prevDate = date;
+          const noteAll = [notes, interest ? `Interest ${money(interest)}` : ''].filter(Boolean).join(' · ');
+          inv = { id: 'i_' + uid(), vendorId: v.id, invoiceNo: B, srcRef: B, invoiceDate: date, dueDate: '', amount: r2(C), memo, note: noteAll, poNo: '', interest: interest ? r2(interest) : 0,
+            product: productOf(memo + ' ' + B) || (v.group === 'intercompany' ? 'Duty refund' : ''), lines: [{ memo, amount: r2(C), product: productOf(memo + ' ' + B) }],
+            needsReview: flags.length > 0, reviewFlags: flags, seq: seq++, source: 'excel', _lump: new Set() };
+          vInv.push(inv); lastInv = inv;
+        }
+        if (!D && rowDate) inv._lump.add(rowDate);   // received together with another row's receipt
+      }
+      if (D) {
+        const p = { id: 'p_' + uid(), vendorId: v.id, date: rowDate, amount: r2(D), fee: 0, method: '', ref: '', memo: C ? '' : (B || memo), allocations: [], source: 'excel', reviewFlags: rowDate ? [] : ['noDate'], _inv: C ? inv : null, _row: r };
+        vPay.push(p);
+      }
+    }
+    // allocation: (1) own row, (2) rows marked with the same receipt date, (3) oldest open invoices dated on/before the receipt
+    const open = new Map(vInv.map(i => [i.id, i.amount]));
+    const rem = p => r2(p.amount - p.allocations.reduce((s, a) => s + a.amount, 0));
+    const give = (p, i) => { const a = r2(Math.min(rem(p), open.get(i.id))); if (a <= 0.004) return; const ex = p.allocations.find(x => x.invoiceId === i.id); if (ex) ex.amount = r2(ex.amount + a); else p.allocations.push({ invoiceId: i.id, amount: a }); open.set(i.id, r2(open.get(i.id) - a)); };
+    for (const p of vPay) if (p._inv) give(p, p._inv);
+    for (const p of vPay) if (rem(p) > 0.004 && p.date) { for (const i of vInv) { if (rem(p) <= 0.004) break; if (i._lump.has(p.date) && open.get(i.id) > 0.004) { give(p, i); p._lumped = true; } } }
+    const byDate = [...vInv].sort((a, b) => (a.invoiceDate || '').localeCompare(b.invoiceDate || '') || a.seq - b.seq);
+    for (const p of vPay) if (rem(p) > 0.004) { for (const i of byDate) { if (rem(p) <= 0.004) break; if (p.date && i.invoiceDate && i.invoiceDate > p.date) continue; if (open.get(i.id) > 0.004) { give(p, i); p._lumped = true; } } }
+    for (const p of vPay) {
+      if (p._lumped) { p.reviewFlags.push('lump'); p.memo = [p.memo, LANG === 'ko' ? '엑셀 일괄 입금 → 자동 배분' : 'Excel lump receipt → auto-allocated'].filter(Boolean).join(' · '); }
+      const u = rem(p); if (u > 0.004 && p.allocations.length && (u > 1 || p._lumped)) p.reviewFlags.push('unapplied');
+      p.needsReview = p.reviewFlags.length > 0; delete p._inv; delete p._row; delete p._lumped;
+      payments.push(p);
+    }
+    for (const i of vInv) {
+      const o = open.get(i.id);
+      if (o > 0.004 && o < 1 && i.amount > 1) { i.reviewFlags.push('cent'); i.needsReview = true; }
+      if (i.lines.length < 2) delete i.lines;
+      delete i._lump; invoices.push(i);
+    }
+    report.push({ vendorId: v.id, name: v.name, sheet: v.sheet, excelBal: r2(sumC - sumD) });
+  }
+  return { vendors, invoices, payments, report };
+}
+
+async function runImport(file) {
+  const res = await importWorkbook(file);
+  await Store.clear(true);
+  await Store.putMany('vendors', res.vendors.map(v => Store.stamp(v)));
+  await Store.putMany('invoices', res.invoices.map(v => Store.stamp(v)));
+  await Store.putMany('payments', res.payments.map(v => Store.stamp(v)));
+  await setShared('importInfo', { file: file.name, at: new Date().toISOString(), by: currentUserName() });
+  const c = compute({ asOf: '2999-12-31', inclIC: true });
+  res.report.forEach(r => { const b = c.byV.get(r.vendorId); r.appBal = b ? b.balance : 0; r.diff = r2(r.appBal - r.excelBal); r.credit = b ? r2(b.credit || 0) : 0; });
+  return res;
+}
+
+/* =====================================================================
+   Invoice parsing — pdf.js text → (OCR fallback) → rule extraction;
+   optional Claude API re-read.
+   ===================================================================== */
+const PDFJS_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+const TESS_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+let _pdfReady = null, _tessReady = null, _tessWorker = null;
+function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('load ' + src)); document.head.appendChild(s); }); }
+async function pdfReady() {
+  if (!_pdfReady) _pdfReady = (async () => {
+    if (!window.pdfjsLib) await loadScript('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js');
+    try { const code = await (await fetch(PDFJS_WORKER)).text(); pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([code], { type: 'text/javascript' })); }
+    catch { pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER; }
+  })();
+  return _pdfReady;
+}
+async function ocrImage(src, onStatus) {
+  if (!_tessReady) _tessReady = loadScript(TESS_URL);
+  await _tessReady;
+  if (!_tessWorker) { onStatus && onStatus('ocr'); _tessWorker = await Tesseract.createWorker('eng'); }
+  const { data } = await _tessWorker.recognize(src);
+  return data.text || '';
+}
+/* rebuild reading-order lines from pdf.js text items */
+function itemsToLines(items) {
+  const rows = [];
+  for (const it of items) {
+    if (!it.str || !it.str.trim()) continue;
+    const x = it.transform[4], y = it.transform[5], h = Math.abs(it.transform[3]) || 8;
+    let row = rows.find(r => Math.abs(r.y - y) < Math.max(2.5, h * 0.45));
+    if (!row) { row = { y, h, items: [] }; rows.push(row); }
+    row.items.push({ x, w: it.width || it.str.length * h * 0.5, s: it.str });
+  }
+  rows.sort((a, b) => b.y - a.y);
+  return rows.map(r => {
+    r.items.sort((a, b) => a.x - b.x);
+    let line = '', end = null;
+    for (const it of r.items) { if (end !== null) { const gap = it.x - end; line += gap > r.h * 1.5 ? '   ' : gap > r.h * 0.15 ? ' ' : ''; } line += it.s; end = it.x + it.w; }
+    return line.trim();
+  });
+}
+async function extractText(file, onStatus) {
+  const isPdf = /pdf$/i.test(file.type) || /\.pdf$/i.test(file.name);
+  if (isPdf) {
+    await pdfReady();
+    const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+    const n = Math.min(pdf.numPages, 4); let lines = [];
+    for (let p = 1; p <= n; p++) { const page = await pdf.getPage(p); const tc = await page.getTextContent(); lines.push(...itemsToLines(tc.items)); if (p < n) lines.push('---'); }
+    let text = lines.join('\n');
+    if (text.replace(/\s|-/g, '').length >= 40) return { text, method: 'rules', pages: pdf.numPages };
+    // scanned PDF → OCR first 2 pages
+    onStatus && onStatus('ocr'); let ocr = '';
+    for (let p = 1; p <= Math.min(pdf.numPages, 2); p++) {
+      const page = await pdf.getPage(p); const vp = page.getViewport({ scale: 2.2 });
+      const cv = document.createElement('canvas'); cv.width = vp.width; cv.height = vp.height;
+      await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+      ocr += (await ocrImage(cv, onStatus)) + '\n';
+    }
+    return { text: ocr, method: 'ocr', pages: pdf.numPages };
+  }
+  onStatus && onStatus('ocr');
+  return { text: await ocrImage(file, onStatus), method: 'ocr', pages: 1 };
+}
+/* preview: render PDF pages to PNG data URLs (works in every browser, no PDF plugin needed) */
+async function renderPdfPages(file, maxPages = 5) {
+  await pdfReady();
+  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+  const out = [];
+  for (let p = 1; p <= Math.min(pdf.numPages, maxPages); p++) {
+    const page = await pdf.getPage(p); const vp = page.getViewport({ scale: 1.6 });
+    const cv = document.createElement('canvas'); cv.width = vp.width; cv.height = vp.height;
+    await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+    out.push(cv.toDataURL('image/png'));
+  }
+  return { imgs: out, total: pdf.numPages };
+}
+
+/* ---------- date / money helpers ---------- */
+const MON = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12 };
+const DATE_RX = [
+  { rx: /\b(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})\b/g, f: m => [+m[1], +m[2], +m[3]] },
+  { rx: /\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4}|\d{2})\b/g, f: m => { let a = +m[1], b = +m[2], y = +m[3]; if (y < 100) y += 2000; return a > 12 ? [y, b, a] : [y, a, b]; } },
+  { rx: /\b(jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b/gi, f: m => [+m[3], MON[m[1].toLowerCase()], +m[2]] },
+  { rx: /\b(\d{1,2})[\s\-]+(jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)[a-z]*\.?[\s\-,]+(\d{4}|\d{2})\b/gi, f: m => { let y = +m[3]; if (y < 100) y += 2000; return [y, MON[m[2].toLowerCase()], +m[1]]; } },
+];
+function findDates(s) {
+  const out = [];
+  for (const d of DATE_RX) { d.rx.lastIndex = 0; let m; while ((m = d.rx.exec(s))) { const [y, mo, da] = d.f(m); if (y >= 2015 && y <= 2040 && validYMD(y, mo, da)) out.push({ idx: m.index, v: `${y}-${pad(mo)}-${pad(da)}`, raw: m[0] }); } }
+  return out.sort((a, b) => a.idx - b.idx);
+}
+const MONEY_RX = /(?:USD|US\$|\$)?\s?\(?-?\d{1,3}(?:,\d{3})+(?:\.\d{2})?\)?|(?:USD|US\$|\$)?\s?\(?-?\d+\.\d{2}\)?/g;
+function findMoney(s) {
+  const out = []; MONEY_RX.lastIndex = 0; let m;
+  while ((m = MONEY_RX.exec(s))) {
+    const raw = m[0]; const neg = /\(|-/.test(raw); const v = parseFloat(raw.replace(/[^0-9.]/g, ''));
+    if (!isNaN(v)) out.push({ idx: m.index, v: neg ? -v : v, cur: /\$|USD/.test(raw) });
+  }
+  return out;
+}
+
+/* ---------- vendor detection ---------- */
+function detectVendor(text, fileName) {
+  let nt = normWords(text);
+  for (const sn of shared('selfNames', ['JNF AM LLC', 'JNF AM', 'JNFAM'])) nt = nt.split(normWords(sn)).join(' ');
+  const nf = normWords(fileName);
+  let best = null;
+  for (const v of S.vendors) {
+    if (v.active === false) continue;
+    let score = 0;
+    for (const a of [v.name, ...(v.aliases || [])]) {
+      const na = normWords(a).trim(); if (na.length < 3) continue;
+      if (nt.includes(' ' + na + ' ')) score = Math.max(score, 10 + na.length);
+      else if (nf.includes(' ' + na + ' ')) score = Math.max(score, 5 + na.length);
+    }
+    if (v.invRegex) { try { if (new RegExp(v.invRegex, 'i').test(text) || new RegExp(v.invRegex, 'i').test(fileName)) score += 25; } catch { } }
+    if (score && (!best || score > best.score)) best = { v, score };
+  }
+  return best ? best.v : null;
+}
+
+/* ---------- rule-based field extraction ---------- */
+function parseInvoiceText(text, fileName = '') {
+  const lines = text.split('\n').map(s => s.replace(/\s+$/, '')).filter(s => s.trim());
+  const res = { vendorId: '', invoiceNo: '', invoiceDate: '', dueDate: '', amount: '', memo: '', poNo: '', product: '', terms: null, conf: {} };
+  const vendor = detectVendor(text, fileName);
+  if (vendor) { res.vendorId = vendor.id; res.conf.vendorId = 'hi'; }
+
+  // invoice number
+  const isDateLike = s => findDates(s).length > 0;
+  const badNo = s => !s || s.length < 3 || !/\d/.test(s) || isDateLike(s) || /^\$?[\d,]+\.\d{2}$/.test(s) || /^(date|number|no|page)$/i.test(s);
+  { const m = text.match(OUR_INV_RX) || fileName.match(OUR_INV_RX); if (m) { res.invoiceNo = m[1].replace(/\s+/g, '').toUpperCase(); res.conf.invoiceNo = 'hi'; } }
+  if (!res.invoiceNo && vendor && vendor.invRegex) { try { const m = text.match(new RegExp(vendor.invRegex, 'i')); if (m) { res.invoiceNo = m[0]; res.conf.invoiceNo = 'hi'; } } catch { } }
+  const LBL_NO = /(invoice|inv|bill|statement|document|reference)\s*(?:no\.?|number|num|#|id)\s*[:#.]?\s*/i;
+  if (!res.invoiceNo) {
+    for (let i = 0; i < lines.length && !res.invoiceNo; i++) {
+      const L0 = lines[i]; const m = L0.match(LBL_NO); if (!m) continue;
+      const after = L0.slice(m.index + m[0].length).trim().split(/\s{2,}|\s(?=[A-Z][a-z])/)[0].split(/\s+/)[0];
+      if (!badNo(after)) { res.invoiceNo = after.replace(/[,;]$/, ''); res.conf.invoiceNo = 'hi'; break; }
+      // header-row style: value on next line in similar column order
+      const nx = lines[i + 1] || ''; const hdr = L0.split(/\s{2,}/); const vals = nx.split(/\s{2,}/);
+      const col = hdr.findIndex(h => LBL_NO.test(h + ' '));
+      const cand = (col >= 0 && vals[col]) ? vals[col].trim().split(/\s+/)[0] : (vals.find(x => !badNo(x.trim())) || '').trim().split(/\s+/)[0];
+      if (!badNo(cand)) { res.invoiceNo = cand; res.conf.invoiceNo = 'mid'; }
+    }
+  }
+  if (!res.invoiceNo) { const m = text.match(/\binvoice\s*[:#]\s*([A-Z0-9][A-Z0-9\-\/]{2,})/i); if (m && !badNo(m[1])) { res.invoiceNo = m[1]; res.conf.invoiceNo = 'mid'; } }
+
+  // dates
+  const pickLabeled = rx => {
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(rx); if (!m) continue;
+      const d = findDates(lines[i].slice(m.index)); if (d.length) return d[0].v;
+      const hdr = lines[i].split(/\s{2,}/); const col = hdr.findIndex(h => rx.test(h));
+      const nx = lines[i + 1] || ''; const vals = nx.split(/\s{2,}/);
+      if (col >= 0 && vals[col]) { const d2 = findDates(vals[col]); if (d2.length) return d2[0].v; }
+      const d3 = findDates(nx); if (d3.length) return d3[0].v;
+    }
+    return '';
+  };
+  res.dueDate = pickLabeled(/(due\s*date|payment\s*due|due\s*by|pay\s*by|date\s*due)/i);
+  if (res.dueDate) res.conf.dueDate = 'hi';
+  res.invoiceDate = pickLabeled(/(invoice\s*date|inv\.?\s*date|date\s*of\s*invoice|billing\s*date|bill\s*date|statement\s*date|issue\s*date|date\s*issued|invoice\s*dt)/i);
+  if (res.invoiceDate) res.conf.invoiceDate = 'hi';
+  if (!res.invoiceDate) { const d = pickLabeled(/(^|\s)date\s*[:]?/i); if (d && d !== res.dueDate) { res.invoiceDate = d; res.conf.invoiceDate = 'mid'; } }
+  if (!res.invoiceDate && invNoDate(res.invoiceNo)) { res.invoiceDate = invNoDate(res.invoiceNo); res.conf.invoiceDate = 'mid'; }
+  if (!res.invoiceDate) { const all = findDates(text).filter(d => d.v !== res.dueDate); if (all.length) { res.invoiceDate = all[0].v; res.conf.invoiceDate = 'mid'; } }
+
+  // amount
+  const LBLS = [/balance\s*due/i, /amount\s*due/i, /net\s*amount/i, /amount\s*after/i, /total\s*(amount\s*)?due/i, /please\s*pay/i, /pay\s*this\s*amount/i, /invoice\s*total/i, /grand\s*total/i, /total\s*amount/i, /total\s*(usd|\(usd\))/i, /new\s*balance/i, /\btotal\b/i];
+  let best = null;
+  lines.forEach((ln, i) => {
+    if (/sub\s*-?total|total\s*tax|tax\s*total|total\s*(qty|quantity|weight|pages?|units?|items?)/i.test(ln)) return;
+    const p = LBLS.findIndex(rx => rx.test(ln)); if (p < 0) return;
+    const after = ln.slice(ln.search(LBLS[p]));
+    let ms = findMoney(after); if (!ms.length) ms = findMoney(lines[i + 1] || '');
+    if (!ms.length) return;
+    const v = ms[ms.length - 1].v;
+    if (!best || p < best.p || (p === best.p && v > best.v)) best = { p, v };
+  });
+  if (best) { res.amount = r2(best.v); res.conf.amount = best.p < 12 ? 'hi' : 'mid'; }
+  else { const all = findMoney(text).filter(m => m.v > 0); if (all.length) { res.amount = r2(Math.max(...all.map(m => m.v))); res.conf.amount = 'mid'; } }
+
+  // terms
+  const tn = text.match(/\bnet\s*(\d{1,3})\b/i); if (tn) res.terms = { type: 'net', days: +tn[1] };
+  else if (/due\s*(up)?on\s*receipt/i.test(text)) res.terms = { type: 'receipt' };
+  if (!res.dueDate && res.terms && res.invoiceDate) { res.dueDate = calcDue(res.invoiceDate, res.terms); res.conf.dueDate = 'mid'; }
+
+  // file-name hints: JAIN-260824A.pdf
+  if (!res.invoiceDate) { const d = invNoDate(fileName); if (d) { res.invoiceDate = d; res.conf.invoiceDate = 'mid'; } }
+  // memo: first line-item description under a Description/Item header
+  const hi = lines.findIndex(l => /^\s*(description|item\s*description|item|product|service|particulars|details)\b/i.test(l));
+  if (hi >= 0) {
+    for (let k = hi + 1; k < Math.min(lines.length, hi + 4); k++) {
+      const d = lines[k].split(/\s{2,}/)[0].replace(/\s+[\d,.$]+$/, '').trim();
+      if (d.length >= 3 && /[a-z]/i.test(d) && !/total|subtotal/i.test(d)) { res.memo = d.slice(0, 60); res.conf.memo = 'mid'; break; }
+    }
+  }
+  // PO number (customer purchase order)
+  { const m = text.match(/\b(?:customer\s*)?P\.?\s?O\.?\s*(?:no\.?|number|#)?\s*[:#.]?\s*([A-Z0-9][A-Z0-9\-]{4,})/i); if (m && /\d{4}/.test(m[1]) && !OUR_INV_RX.test(m[1])) { res.poNo = m[1]; res.conf.poNo = 'hi'; } }
+  // product from the line items
+  res.product = productOf(res.memo) || productOf(text.slice(0, 3000)); if (res.product) res.conf.product = res.memo ? 'hi' : 'mid';
+  // otherwise customer's latest memo as a starting point
+  if (!res.memo && vendor) { const last = S.invoices.filter(i => i.vendorId === vendor.id && i.memo).sort((a, b) => (b.invoiceDate || '').localeCompare(a.invoiceDate || ''))[0]; if (last) { res.memo = last.memo; res.conf.memo = 'mid'; if (!res.product) { res.product = last.product || ''; res.conf.product = 'mid'; } } }
+  return res;
+}
+
+/* ---------- Claude API ---------- */
+async function aiParse(file) {
+  const model = shared('aiModel', 'claude-sonnet-4-5');
+  const isPdf = /pdf$/i.test(file.type) || /\.pdf$/i.test(file.name);
+  const data = await fileToB64(file);
+  const vendorList = S.vendors.filter(v => v.active !== false).map(v => v.name).join(' | ');
+  const prompt = `You are reading a SALES invoice (accounts receivable) ISSUED BY our company "JNF AM LLC" (also JNFAM). We are the seller; the customer is the Bill-To / Sold-To party, never JNF AM.
+Our invoice numbers look like JAIN-YYMMDD[suffix] (e.g. JAIN-260824A, JAIN-20260205) or JNFAMYYMMDD[suffix].
+Known customers: ${vendorList}
+Return ONLY a JSON object, no prose:
+{"customer_name": string (bill-to company as printed), "matched_customer": string|null (exactly one of the known customers if it is the same company, else null), "invoice_number": string|null, "invoice_date": "YYYY-MM-DD"|null, "due_date": "YYYY-MM-DD"|null, "total_amount": number|null (the amount the customer must pay on this invoice, i.e. after any deposit deduction, in invoice currency), "currency": string, "payment_terms": string|null, "description": string (short memo under 60 chars in English, e.g. "HF 16 totes" or "ICP-MS analysis"), "product": one of ${JSON.stringify(PRODUCTS)}, "po_number": string|null}`;
+  const j = await aiProxyCall({ action: 'parse', model, mediaType: isPdf ? 'application/pdf' : (file.type || 'image/png'), data, prompt });
+  const txt = j.text || '';
+  const m = txt.match(/\{[\s\S]*\}/); if (!m) throw new Error('AI returned no JSON');
+  const o = JSON.parse(m[0]);
+  const res = { conf: {} };
+  let v = o.matched_customer ? S.vendors.find(x => x.name === o.matched_customer) : null;
+  if (!v && o.customer_name) v = detectVendor(o.customer_name, '');
+  if (v) { res.vendorId = v.id; res.conf.vendorId = 'hi'; }
+  res.vendorNameRaw = o.customer_name || '';
+  if (o.invoice_number) { res.invoiceNo = String(o.invoice_number); res.conf.invoiceNo = 'hi'; }
+  if (o.invoice_date) { res.invoiceDate = o.invoice_date; res.conf.invoiceDate = 'hi'; }
+  if (o.due_date) { res.dueDate = o.due_date; res.conf.dueDate = 'hi'; }
+  if (o.total_amount != null) { res.amount = r2(o.total_amount); res.conf.amount = 'hi'; }
+  if (o.description) { res.memo = o.description; res.conf.memo = 'hi'; }
+  if (o.po_number) { res.poNo = String(o.po_number); res.conf.poNo = 'hi'; }
+  if (o.product && PRODUCTS.includes(o.product)) { res.product = o.product; res.conf.product = 'hi'; }
+  res.currency = o.currency; res.terms = o.payment_terms;
+  return res;
+}
+async function aiTest() { return aiProxyCall({ action: 'ping' }); }
+
+/* ---------- duplicate check ---------- */
+function findDuplicates(f, exceptId) {
+  const out = [];
+  const nk = normKey(f.invoiceNo);
+  for (const i of S.invoices) {
+    if (i.id === exceptId || i.vendorId !== f.vendorId) continue;
+    if (nk && nk.length >= 3 && (normKey(i.invoiceNo) === nk || normKey(i.srcRef).endsWith(nk))) out.push(i);
+    else if (f.amount && Math.abs((+i.amount) - (+f.amount)) < 0.005 && i.invoiceDate === f.invoiceDate) out.push(i);
+  }
+  return out;
+}
+
+/* =====================================================================
+   Views
+   ===================================================================== */
+const UI = {
+  asOf: todayStr(), inclIC: Pref.get('inclIC', true),
+  inv: { q: '', vendor: '', status: 'unpaid', from: '', to: '', bucket: '', limit: 300, sort: 'invoiceDate', dir: -1 },
+  pay: { q: '', vendor: '', from: '', to: '', method: '', limit: 300 },
+  sum: { hideZero: true, sort: 'balance', dir: -1 },
+  ven: { q: '', inactive: false },
+  vendorTab: 'ledger',
+};
+const ACT = {};
+let CH = {};
+const AGE_COLORS = ['var(--ag0)', 'var(--ag1)', 'var(--ag2)', 'var(--ag3)', 'var(--ag4)'];
+
+/* ---------- modal ---------- */
+function openModal({ title, body, foot, wide, stack }) {
+  if (!stack) closeModal();
+  const bg = document.createElement('div'); bg.className = 'mbg';
+  bg.innerHTML = `<div class="modal ${wide ? 'wide' : ''}"><div class="modal-h"><h3>${title}</h3><button class="x" data-act="closeModal">×</button></div><div class="modal-b">${body}</div>${foot ? `<div class="modal-f">${foot}</div>` : ''}</div>`;
+  bg.addEventListener('mousedown', e => { if (e.target === bg) closeModal(bg); });
+  if (!can('edit')) bg.classList.add('ro');
+  $('#modal-root').appendChild(bg); return bg;
+}
+/* closeModal() closes all; closeModal(el) closes that modal */
+function closeModal(which) {
+  const list = which instanceof Element ? [which] : [...$('#modal-root').children];
+  list.forEach(x => { x.dispatchEvent(new Event('mbg-close')); x.remove(); });
+}
+ACT.closeModal = el => closeModal(el.closest('.mbg') || undefined);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { const l = $('#modal-root').lastElementChild; if (l) closeModal(l); } });
+
+const vendorOptions = (sel, withEmpty = true, onlyActive = false) => (withEmpty ? `<option value="">${t('selVendor')}</option>` : '') +
+  [...S.vendors].filter(v => !onlyActive || v.active !== false || v.id === sel).sort((a, b) => a.name.localeCompare(b.name)).map(v => `<option value="${v.id}" ${v.id === sel ? 'selected' : ''}>${esc(v.name)}</option>`).join('');
+const productOptions = sel => `<option value="">—</option>` + PRODUCTS.map(p => `<option value="${p}" ${p === sel ? 'selected' : ''}>${esc(prodLabel(p))}</option>`).join('') + (sel && !PRODUCTS.includes(sel) ? `<option selected>${esc(sel)}</option>` : '');
+const conf = c => `<span class="conf ${c || 'lo'}" title="${t('conf_' + (c || 'lo'))}"></span>`;
+
+/* ---------- welcome ---------- */
+function welcome() {
+  return `<div class="card"><div class="empty"><div style="font-size:15px;color:var(--text);margin-bottom:12px">${t('welcome')}</div><a class="btn pri" href="#settings">${t('goSettings')}</a></div></div>`;
+}
+function pageHead(title, sub, right = '') { return `<div class="page-h"><h1>${title}</h1>${sub ? `<span class="sub">${sub}</span>` : ''}<span class="sp"></span>${right}</div>`; }
+const asOfCtl = () => `<label class="chk">${t('asOf')} <input type="date" class="inp" id="asOf" value="${UI.asOf}"></label><label class="chk"><input type="checkbox" id="inclIC" ${UI.inclIC ? 'checked' : ''}> ${t('inclIC')}</label>`;
+function bindAsOf() {
+  const a = $('#asOf'); if (a) a.onchange = () => { UI.asOf = a.value || todayStr(); render(); };
+  const c = $('#inclIC'); if (c) c.onchange = () => { UI.inclIC = c.checked; Pref.set('inclIC', UI.inclIC); render(); };
+}
+
+/* =================== DASHBOARD =================== */
+function vDashboard() {
+  if (!S.vendors.length) return welcome();
+  const c = compute({ asOf: UI.asOf, inclIC: UI.inclIC });
+  let od = { a: 0, n: 0 }, d7 = { a: 0, n: 0 }, d30 = { a: 0, n: 0 }, review = 0;
+  const overdue = [], upcoming = [];
+  for (const i of S.invoices) {
+    if (!c.vOK(i.vendorId)) continue;
+    if (i.needsReview) review++;
+    const x = c.inv.get(i.id); if (!x || x.agingOpen <= 0.004) continue;
+    if (x.dpd > 0) { od.a += x.agingOpen; od.n++; overdue.push([i, x]); }
+    else { if (-x.dpd <= 7) { d7.a += x.agingOpen; d7.n++; } if (-x.dpd <= 30) { d30.a += x.agingOpen; d30.n++; } if (-x.dpd <= 14) upcoming.push([i, x]); }
+  }
+  const mo = UI.asOf.slice(0, 7);
+  const paidM = S.payments.filter(p => c.vOK(p.vendorId) && p.date && p.date.startsWith(mo) && p.date <= UI.asOf);
+  const paidMTD = paidM.reduce((s, p) => s + (+p.amount || 0), 0);
+  const payRv = S.payments.filter(p => p.needsReview && c.vOK(p.vendorId)).length;
+  const tot = c.tot;
+  const kpi = (l, v, s, cls = '', go = '') => `<div class="card kpi ${cls}" ${go ? `data-act="go" data-go="${go}"` : ''}><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s}</div></div>`;
+  const openN = [...c.inv.entries()].filter(([id, x]) => x.agingOpen > 0.004 && c.vOK(S.invoices.find(i => i.id === id)?.vendorId)).length;
+  let h = pageHead(t('dashboard'), '', asOfCtl());
+  h += `<div class="kpis">
+    ${kpi(t('totalAP'), money(tot.balance, 0), t('invoicesN', { n: openN }), '', 'invoices|unpaid')}
+    ${kpi(t('overdue'), money(od.a, 0), t('invoicesN', { n: od.n }), od.a > 0 ? 'bad' : '', 'invoices|overdue')}
+    ${kpi(t('due7'), money(d7.a, 0), t('invoicesN', { n: d7.n }), d7.a > 0 ? 'warn' : '', 'invoices|due7')}
+    ${kpi(t('due30'), money(d30.a, 0), t('invoicesN', { n: d30.n }), '', 'invoices|due30')}
+    ${kpi(t('paidMTD'), money(paidMTD, 0), t('paysN', { n: paidM.length }) + (payRv ? ` · <span style="color:var(--warn)">${LANG === 'ko' ? '검토' : 'review'} ${payRv}</span>` : ''), '', 'payments|mtd')}
+    ${kpi(t('needReview'), review, t('invoicesN', { n: review }), review ? 'warn' : '', 'invoices|review')}
+  </div>`;
+  // aging
+  const sum = tot.aging.reduce((s, x) => s + Math.max(0, x), 0) || 1;
+  const ageBar = tot.aging.map((x, k) => x > 0 ? `<div style="width:${(x / sum * 100).toFixed(2)}%;background:${AGE_COLORS[k]}" title="${t(BUCKETS[k])}: ${money(x)}"></div>` : '').join('');
+  const ageLeg = tot.aging.map((x, k) => `<span class="it" data-act="go" data-go="invoices|bucket${k}"><span class="sw" style="background:${AGE_COLORS[k]}"></span>${t(BUCKETS[k])} <b>${money(x, 0)}</b> <span class="muted">${(Math.max(0, x) / sum * 100).toFixed(0)}%</span></span>`).join('');
+  const top = [...c.vendors].filter(r => r.balance > 0.004).sort((a, b) => b.balance - a.balance).slice(0, 10);
+  const tmax = top[0]?.balance || 1;
+  h += `<div class="row2">
+    <div class="card"><div class="card-h"><h3>${t('agingTitle')}</h3><span class="sp"></span><a class="link" href="#summary" style="font-size:12px">${t('summary')} →</a></div><div class="card-b">
+      <div class="agebar">${ageBar}</div><div class="legend">${ageLeg}</div>
+      <div style="margin-top:18px" class="tbl-wrap"><table class="t"><thead><tr><th>${t('vendor')}</th>${BUCKETS.map(b => `<th class="num">${t(b)}</th>`).join('')}<th class="num">${t('total')}</th></tr></thead><tbody>
+      ${top.slice(0, 6).map(r => `<tr class="click" data-act="vendor" data-id="${r.vendorId}"><td>${esc(vName(r.vendorId))}</td>${r.aging.map(x => `<td class="num ${Math.abs(x) < 0.005 ? 'muted' : ''}">${Math.abs(x) < 0.005 ? '–' : money(x, 0)}</td>`).join('')}<td class="num"><b>${money(r.balance, 0)}</b></td></tr>`).join('')}
+      </tbody></table></div>
+    </div></div>
+    <div class="card"><div class="card-h"><h3>${t('topVendors')}</h3></div><div class="card-b"><div class="hbars">
+      ${top.length ? top.map(r => `<div class="hb" data-act="vendor" data-id="${r.vendorId}" title="${esc(vName(r.vendorId))}: ${money(r.balance)}"><span class="nm">${esc(vName(r.vendorId))}</span><span class="tr"><i style="width:${(r.balance / tmax * 100).toFixed(1)}%"></i></span><span class="vv">${moneyK(r.balance)}</span></div>`).join('') : `<div class="empty">${t('noData')}</div>`}
+    </div></div></div>
+  </div>`;
+  // monthly + account
+  const yr = UI.asOf.slice(0, 4);
+  const acc = new Map();
+  for (const i of S.invoices) { if (!c.vOK(i.vendorId) || !(i.invoiceDate || '').startsWith(yr) || i.invoiceDate > UI.asOf) continue; for (const ln of invLines(i)) { const p = ln.product || i.product || ''; acc.set(p, (acc.get(p) || 0) + (+ln.amount || 0)); } }
+  const accTop = [...acc.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10); const amax = accTop[0]?.[1] || 1;
+  h += `<div class="row3">
+    <div class="card"><div class="card-h"><h3>${t('monthly')} · ${yr}</h3><span class="sp"></span><span class="legend" style="margin:0"><span class="it"><span class="sw" style="background:var(--s1)"></span>${t('invoiced')}</span><span class="it"><span class="sw" style="background:var(--s2)"></span>${t('paid')}</span></span></div><div class="card-b"><div class="chart-box"><canvas id="chMonthly"></canvas></div></div></div>
+    <div class="card"><div class="card-h"><h3>${t('byAccount')}</h3></div><div class="card-b"><div class="hbars">
+      ${accTop.map(([code, v]) => `<div class="hb" title="${esc(prodLabel(code))}: ${money(v)}"><span class="nm">${esc(prodLabel(code))}</span><span class="tr"><i style="width:${(v / amax * 100).toFixed(1)}%"></i></span><span class="vv">${moneyK(v)}</span></div>`).join('') || `<div class="empty">${t('noData')}</div>`}
+    </div></div></div>
+  </div>`;
+  overdue.sort((a, b) => b[1].dpd - a[1].dpd); upcoming.sort((a, b) => a[1].due.localeCompare(b[1].due));
+  const miniTbl = (rows, dcol) => rows.length ? `<div class="tbl-wrap" style="max-height:320px"><table class="t"><thead><tr><th>${t('vendor')}</th><th>${t('invNo')}</th><th>${t('dueDate')}</th><th class="num">${dcol}</th><th class="num">${t('open')}</th></tr></thead><tbody>${rows.slice(0, 12).map(([i, x]) => `<tr class="click" data-act="editInv" data-id="${i.id}"><td class="wrap">${esc(vName(i.vendorId))}</td><td class="wrap">${esc(i.invoiceNo)}</td><td>${x.due}</td><td class="num">${t('dayN', { n: Math.abs(x.dpd) })}</td><td class="num">${money(x.agingOpen)}</td></tr>`).join('')}</tbody></table></div>${rows.length > 12 ? `<div class="muted" style="font-size:12px;margin-top:6px">+${rows.length - 12}</div>` : ''}` : `<div class="empty">${t('noData')}</div>`;
+  h += `<div class="row3">
+    <div class="card"><div class="card-h"><h3>${t('overdueList')}</h3><span class="sp"></span><span class="b overdue">${od.n}</span></div><div class="card-b">${miniTbl(overdue, LANG === 'ko' ? '연체일' : 'Days late')}</div></div>
+    <div class="card"><div class="card-h"><h3>${t('upcoming')}</h3><span class="sp"></span><span class="b open">${upcoming.length}</span></div><div class="card-b">${miniTbl(upcoming, LANG === 'ko' ? '남은 일수' : 'Days left')}</div></div>
+  </div>`;
+  setTimeout(() => {
+    const inv = Array(12).fill(0), pd = Array(12).fill(0);
+    S.invoices.forEach(i => { if (c.vOK(i.vendorId) && (i.invoiceDate || '').startsWith(yr) && i.invoiceDate <= UI.asOf) inv[+i.invoiceDate.slice(5, 7) - 1] += +i.amount || 0; });
+    S.payments.forEach(p => { if (c.vOK(p.vendorId) && (p.date || '').startsWith(yr) && p.date <= UI.asOf) pd[+p.date.slice(5, 7) - 1] += +p.amount || 0; });
+    const el = $('#chMonthly'); if (!el || !window.Chart) return;
+    const css = getComputedStyle(document.documentElement);
+    CH.m = new Chart(el, {
+      type: 'bar',
+      data: { labels: ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'].map(m => LANG === 'ko' ? m + '월' : MONTHS[m - 1][0].toUpperCase() + MONTHS[m - 1].slice(1)), datasets: [{ label: t('invoiced'), data: inv, backgroundColor: css.getPropertyValue('--s1').trim(), borderRadius: 4, maxBarThickness: 18 }, { label: t('paid'), data: pd, backgroundColor: css.getPropertyValue('--s2').trim(), borderRadius: 4, maxBarThickness: 18 }] },
+      options: { maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false, callbacks: { label: x => `${x.dataset.label}: ${money(x.raw, 0)}` } } }, scales: { x: { grid: { display: false } }, y: { grid: { color: '#eef0f3' }, border: { display: false }, ticks: { callback: v => moneyK(v) } } } },
+    });
+  });
+  return h;
+}
+ACT.go = el => {
+  const [view, f] = el.dataset.go.split('|');
+  if (view === 'invoices') { Object.assign(UI.inv, { q: '', vendor: '', from: '', to: '', bucket: '', status: 'unpaid' }); if (f === 'overdue') UI.inv.status = 'overdue'; else if (f === 'review') UI.inv.status = 'review'; else if (f === 'due7' || f === 'due30') UI.inv.status = f; else if (f && f.startsWith('bucket')) UI.inv.bucket = f.slice(6); }
+  if (view === 'payments') { Object.assign(UI.pay, { q: '', vendor: '', method: '', from: UI.asOf.slice(0, 7) + '-01', to: UI.asOf }); }
+  location.hash = view;
+};
+ACT.vendor = el => { location.hash = 'vendor/' + el.dataset.id; };
+
+/* =================== AP SUMMARY (aging) =================== */
+function vSummary() {
+  if (!S.vendors.length) return welcome();
+  const c = compute({ asOf: UI.asOf, inclIC: UI.inclIC });
+  let rows = S.vendors.filter(v => c.vOK(v.id)).map(v => ({ v, r: c.byV.get(v.id) || { balance: 0, aging: [0, 0, 0, 0, 0], open: 0 } }));
+  if (UI.sum.hideZero) rows = rows.filter(x => Math.abs(x.r.balance) > 0.004);
+  const s = UI.sum; const key = x => s.sort === 'name' ? x.v.name.toLowerCase() : s.sort.startsWith('a') ? x.r.aging[+s.sort.slice(1)] : x.r.balance;
+  rows.sort((a, b) => (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0) * s.dir);
+  const th = (k, l, cls = '') => `<th class="${cls}" style="cursor:pointer" data-act="sumSort" data-k="${k}">${l}${s.sort === k ? (s.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`;
+  let h = pageHead(t('summary'), t('vendorsN', { n: rows.length }), `${asOfCtl()}<label class="chk"><input type="checkbox" id="hideZero" ${s.hideZero ? 'checked' : ''}> ${t('hideZero')}</label><button class="btn" data-act="exportXlsx">⤓ ${t('exportXlsx')}</button>`);
+  h += `<div class="card"><div class="tbl-wrap tbl-scroll"><table class="t"><thead><tr>${th('name', t('vendor'))}<th>${t('terms')}</th>${BUCKETS.map((b, k) => th('a' + k, t(b), 'num')).join('')}${th('balance', t('total'), 'num')}<th class="num">${t('openCount')}</th></tr></thead><tbody>
+  ${rows.map(({ v, r }) => `<tr class="click" data-act="vendor" data-id="${v.id}"><td>${esc(v.name)} ${isIC(v) ? `<span class="b ic">${t('intercompany')}</span>` : ''}</td><td class="muted">${termsLabel(v.terms)}</td>${r.aging.map((x, k) => `<td class="num ${Math.abs(x) < 0.005 ? 'muted' : ''}" ${k > 0 && x > 0.005 ? 'style="color:var(--bad)"' : ''}>${Math.abs(x) < 0.005 ? '–' : money(x)}</td>`).join('')}<td class="num"><b>${money(r.balance)}</b></td><td class="num">${r.open || ''}</td></tr>`).join('')}
+  </tbody><tfoot><tr><td>${t('total')}</td><td></td>${c.tot.aging.map(x => `<td class="num">${money(x)}</td>`).join('')}<td class="num">${money(c.tot.balance)}</td><td></td></tr></tfoot></table></div></div>
+  <div class="muted" style="font-size:12px;margin-top:8px">${t('apSummaryNote')}</div>`;
+  setTimeout(() => { const hz = $('#hideZero'); if (hz) hz.onchange = () => { UI.sum.hideZero = hz.checked; render(); }; });
+  return h;
+}
+ACT.sumSort = el => { const k = el.dataset.k; if (UI.sum.sort === k) UI.sum.dir *= -1; else { UI.sum.sort = k; UI.sum.dir = k === 'name' ? 1 : -1; } render(); };
+
+/* =================== INVOICES =================== */
+function filteredInvoices(c) {
+  const f = UI.inv; const q = f.q.toLowerCase();
+  return S.invoices.filter(i => {
+    if (!c.vOK(i.vendorId)) return false;
+    if (f.vendor && i.vendorId !== f.vendor) return false;
+    if (f.from && (i.invoiceDate || '') < f.from) return false;
+    if (f.to && (i.invoiceDate || '') > f.to) return false;
+    const x = c.inv.get(i.id); const st = invStatus(i, x);
+    if (f.status === 'unpaid' && st === 'paid') return false;
+    if (['open', 'partial', 'overdue', 'paid'].includes(f.status) && st !== f.status) return false;
+    if (f.status === 'review' && !i.needsReview) return false;
+    if ((f.status === 'due7' || f.status === 'due30') && !(x && x.agingOpen > 0.004 && x.dpd <= 0 && -x.dpd <= (f.status === 'due7' ? 7 : 30))) return false;
+    if (f.bucket !== '' && f.bucket != null && !(x && x.agingOpen > 0.004 && bucketOf(x.dpd) === +f.bucket)) return false;
+    if (q && !(`${vName(i.vendorId)} ${i.invoiceNo} ${i.srcRef || ''} ${i.memo} ${i.note || ''} ${i.poNo || ''} ${i.product || ''} ${i.amount}`.toLowerCase().includes(q))) return false;
+    return true;
+  });
+}
+function vInvoices() {
+  if (!S.vendors.length) return welcome();
+  const c = compute({ asOf: UI.asOf, inclIC: UI.inclIC });
+  const f = UI.inv;
+  let list = filteredInvoices(c);
+  const sk = f.sort, dir = f.dir;
+  const val = i => { const x = c.inv.get(i.id); return sk === 'vendor' ? vName(i.vendorId).toLowerCase() : sk === 'amount' ? +i.amount : sk === 'open' ? (x?.open || 0) : sk === 'due' ? (x?.due || '') : (i[sk] || ''); };
+  list.sort((a, b) => (val(a) > val(b) ? 1 : val(a) < val(b) ? -1 : (a.seq || 0) - (b.seq || 0)) * dir);
+  const total = list.reduce((s, i) => s + (+i.amount || 0), 0), openSum = list.reduce((s, i) => s + (c.inv.get(i.id)?.open || 0), 0);
+  const shown = list.slice(0, f.limit);
+  const sts = ['unpaid', 'all', 'open', 'partial', 'overdue', 'paid', 'due7', 'due30', 'review'];
+  const stLabel = s => s === 'unpaid' ? (LANG === 'ko' ? '미지급 전체' : 'All unpaid') : s === 'all' ? t('all') : s === 'due7' ? t('due7') : s === 'due30' ? t('due30') : t('st_' + s);
+  const th = (k, l, cls = '') => `<th class="${cls}" style="cursor:pointer" data-act="invSort" data-k="${k}">${l}${sk === k ? (dir > 0 ? ' ▲' : ' ▼') : ''}</th>`;
+  let h = pageHead(t('invoices'), t('showing', { n: shown.length, m: list.length }), `${asOfCtl()}<button class="btn ed" data-act="payFor">💳 ${t('payFor')}</button><button class="btn pri ed" data-act="newInv">＋ ${t('newInvoice')}</button>`);
+  h += `<div class="filters">
+    <input class="inp" id="fq" placeholder="${t('search')}" value="${esc(f.q)}" style="width:220px">
+    <select class="inp" id="fv">${vendorOptions(f.vendor).replace(t('selVendor'), LANG === 'ko' ? '전체 업체' : 'All vendors')}</select>
+    <select class="inp" id="fs">${sts.map(s => `<option value="${s}" ${f.status === s ? 'selected' : ''}>${stLabel(s)}</option>`).join('')}</select>
+    ${f.bucket !== '' ? `<span class="b overdue" data-act="clrBucket" style="cursor:pointer">Aging: ${t(BUCKETS[+f.bucket])} ✕</span>` : ''}
+    <label class="chk">${t('from')} <input type="date" class="inp" id="ff" value="${f.from}"></label>
+    <label class="chk">${t('to')} <input type="date" class="inp" id="ft" value="${f.to}"></label>
+    <span class="sp" style="flex:1"></span><span class="pill-sum"><span>${t('amount')} <b>${money(total)}</b></span><span>${t('open')} <b>${money(openSum)}</b></span></span>
+  </div>`;
+  h += `<div class="card"><div class="tbl-wrap tbl-scroll"><table class="t"><thead><tr><th><input type="checkbox" id="selAll"></th>${th('invoiceDate', t('invDate'))}${th('vendor', t('vendor'))}${th('invoiceNo', t('invNo'))}<th>${t('memo')}</th>${th('amount', t('amount'), 'num')}${th('open', t('open'), 'num')}${th('due', t('dueDate'))}<th>${t('status')}</th><th></th></tr></thead><tbody>
+  ${shown.map(i => { const x = c.inv.get(i.id); const st = invStatus(i, x); return `<tr><td><input type="checkbox" class="selInv" value="${i.id}" ${st === 'paid' ? 'disabled' : ''}></td><td>${i.invoiceDate || '<span class="muted">—</span>'}</td><td class="wrap"><a class="link" data-act="vendor" data-id="${i.vendorId}">${esc(vName(i.vendorId))}</a></td><td class="wrap" title="${esc(i.srcRef || '')}">${esc(i.invoiceNo) || '<span class="muted">—</span>'}</td><td class="wrap muted" title="${esc(i.memo)}${i.poNo ? ' · PO ' + esc(i.poNo) : ''}">${esc(i.memo)}${i.poNo ? ` <span style="font-size:11px">· PO ${esc(i.poNo)}</span>` : ''}</td><td class="num">${money(i.amount)}</td><td class="num">${x && Math.abs(x.open) > 0.004 ? money(x.open) : '<span class="muted">–</span>'}</td><td>${x?.due || ''}${x && x.dpd > 0 && x.open > 0.004 ? ` <span class="muted">(${t('dayN', { n: x.dpd })})</span>` : ''}</td><td>${badge(st)} ${i.needsReview ? `<span class="b review" title="${esc((i.reviewFlags || []).map(k => t('rv_' + k, { y: (i.invoiceDate || '').slice(0, 4) })).join('\n'))}">!</span>` : ''}</td><td style="white-space:nowrap">${invAttachment(i) ? `<button class="btn sm ghost" data-act="viewFile" data-id="${i.id}" title="${esc(invAttachment(i).path || invAttachment(i).name || t('attachment'))}">📎</button>` : ''}<button class="btn sm" data-act="editInv" data-id="${i.id}">${t('edit')}</button>${st !== 'paid' ? ` <button class="btn sm ed" data-act="payInv" data-id="${i.id}">${t('payment')}</button>` : ''}</td></tr>`; }).join('') || `<tr><td colspan="10" class="empty">${t('noData')}</td></tr>`}
+  </tbody></table>${list.length > f.limit ? `<div style="padding:12px;text-align:center"><button class="btn" data-act="moreInv">+ ${list.length - f.limit}</button></div>` : ''}</div></div>`;
+  setTimeout(() => {
+    $('#fq').oninput = debounce(e => { UI.inv.q = e.target.value; render(true); }, 250);
+    $('#fv').onchange = e => { UI.inv.vendor = e.target.value; render(); };
+    $('#fs').onchange = e => { UI.inv.status = e.target.value; render(); };
+    $('#ff').onchange = e => { UI.inv.from = e.target.value; render(); };
+    $('#ft').onchange = e => { UI.inv.to = e.target.value; render(); };
+    $('#selAll').onchange = e => $$('.selInv:not(:disabled)').forEach(x => x.checked = e.target.checked);
+  });
+  return h;
+}
+ACT.invSort = el => { const k = el.dataset.k; if (UI.inv.sort === k) UI.inv.dir *= -1; else { UI.inv.sort = k; UI.inv.dir = k === 'vendor' || k === 'invoiceNo' ? 1 : -1; } render(); };
+ACT.moreInv = () => { UI.inv.limit += 500; render(); };
+ACT.clrBucket = () => { UI.inv.bucket = ''; render(); };
+ACT.newInv = (el) => invoiceModal(null, { vendorId: el.dataset.vendor || UI.inv.vendor || '' });
+ACT.editInv = el => invoiceModal(S.invoices.find(i => i.id === el.dataset.id));
+ACT.payInv = el => { const i = S.invoices.find(x => x.id === el.dataset.id); paymentModal(null, { vendorId: i.vendorId, invoiceIds: [i.id] }); };
+ACT.payFor = () => {
+  const ids = $$('.selInv:checked').map(x => x.value); const vs = new Set(ids.map(id => S.invoices.find(i => i.id === id).vendorId));
+  if (!ids.length || vs.size !== 1) return toast(t('selSameVendor'), true);
+  paymentModal(null, { vendorId: [...vs][0], invoiceIds: ids });
+};
+
+/* ---------- invoice modal ---------- */
+function invoiceModal(inv, preset = {}) {
+  const isNew = !inv; inv = inv ? { ...inv } : { vendorId: preset.vendorId || '', invoiceNo: '', invoiceDate: todayStr(), dueDate: '', amount: '', memo: '', note: '', product: '', poNo: '' };
+  const c = compute({ asOf: '2999-12-31' }); const x = inv.id ? c.inv.get(inv.id) : null;
+  const pays = x ? x.payments : [];
+  const body = `<div class="form">
+    <div class="f full"><label>${t('vendor')} *</label><select class="inp" id="iV">${vendorOptions(inv.vendorId, true, true)}</select></div>
+    <div class="f"><label>${t('invNo')}</label><input class="inp" id="iNo" value="${esc(inv.invoiceNo)}">${inv.srcRef && inv.srcRef !== inv.invoiceNo ? `<span class="hint">Excel: ${esc(inv.srcRef)}</span>` : ''}</div>
+    <div class="f"><label>${t('amount')} (USD) *</label><input class="inp" id="iAmt" type="number" step="0.01" value="${inv.amount}"></div>
+    <div class="f"><label>${t('invDate')} *</label><input class="inp" id="iDate" type="date" value="${inv.invoiceDate || ''}"></div>
+    <div class="f"><label>${t('dueDate')}</label><input class="inp" id="iDue" type="date" value="${inv.dueDate || ''}"><span class="hint">${LANG === 'ko' ? '비워두면 고객 결제조건으로 자동 계산' : 'Leave blank to use customer terms'} <span id="iDueHint"></span></span></div>
+    <div class="f full"><label>${t('memo')}</label><input class="inp" id="iMemo" value="${esc(inv.memo)}"></div>
+    <div class="f"><label>${t('account')}</label><select class="inp" id="iAcc">${productOptions(inv.product || productOf(inv.memo))}</select><span class="hint" id="iAccHint"></span></div>
+    <div class="f"><label>${t('poNo')}</label><input class="inp" id="iPo" value="${esc(inv.poNo || '')}"></div>
+    <div class="f"><label>${t('note')}</label><input class="inp" id="iNote" value="${esc(inv.note || '')}"></div>
+    ${inv.lines && inv.lines.length > 1 ? `<div class="f full"><label>${LANG === 'ko' ? '품목 라인 (엑셀)' : 'Lines (Excel)'}</label><div class="muted" style="font-size:12px">${inv.lines.map(l => `${esc(l.memo || '—')} · ${money(l.amount)}`).join('<br>')}</div></div>` : ''}
+    ${inv.needsReview ? `<div class="f full"><div class="warnbox">${(inv.reviewFlags || []).map(k => '• ' + t('rv_' + k, { y: (inv.invoiceDate || '').slice(0, 4) })).join('<br>')}<br><label class="chk" style="margin-top:6px;color:var(--warn)"><input type="checkbox" id="iRev" checked> ${t('clearReview')}</label></div></div>` : ''}
+    <div class="f full" id="iDupBox"></div>
+  </div>
+  ${!isNew ? `<div style="margin-top:16px"><div style="font-weight:600;font-size:13px;margin-bottom:6px">${t('payHistory')}</div>${pays.length ? `<table class="t"><thead><tr><th>${t('payDate')}</th><th>${t('method')}</th><th class="num">${t('applied')}</th><th></th></tr></thead><tbody>${pays.map(p => `<tr><td>${p.date || '—'}</td><td>${p.method ? t('methods_' + p.method) : ''}</td><td class="num">${money((p.allocations.find(a => a.invoiceId === inv.id) || {}).amount)}</td><td><button class="btn sm" data-act="editPay" data-id="${p.id}">${t('edit')}</button></td></tr>`).join('')}</tbody></table><div class="pill-sum"><span>${t('paid')} <b>${money(x.applied)}</b></span><span>${t('open')} <b>${money(x.open)}</b></span></div>` : `<div class="muted">${t('noPay')}</div>`}</div>` : ''}`;
+  const foot = `${!isNew ? `<button class="btn danger ed" data-act="delInv" data-id="${inv.id}">${t('del')}</button>` : ''}<span class="sp"></span><button class="btn" data-act="closeModal">${t('cancel')}</button>${!isNew && x && x.open > 0.004 ? `<button class="btn ed" data-act="payInv" data-id="${inv.id}">${t('recordPayment')}</button>` : ''}<button class="btn pri ed" id="iSave">${t('save')}</button>`;
+  openModal({ title: isNew ? t('newInvoice') : `${t('invoiceDetail')} · ${esc(inv.invoiceNo || '')}`, body, foot });
+  const upd = () => {
+    const v = vendorById($('#iV').value); const d = $('#iDate').value;
+    $('#iDueHint').textContent = v && d ? '· ' + t('autoDue', { d: calcDue(d, v.terms) }) + ` (${termsLabel(v.terms)})` : '';
+    const d2 = findDuplicates({ vendorId: $('#iV').value, invoiceNo: $('#iNo').value, amount: +$('#iAmt').value, invoiceDate: d }, inv.id);
+    $('#iDupBox').innerHTML = d2.length ? `<div class="warnbox">⚠ ${t('dup', { x: d2.map(i => `${i.invoiceNo || '—'} (${i.invoiceDate}, ${money(i.amount)})`).join(', ') })}</div>` : '';
+  };
+  ['iV', 'iDate', 'iNo', 'iAmt'].forEach(id => $('#' + id).addEventListener('input', upd)); upd();
+  $('#iSave').onclick = async () => {
+    const doc = { ...inv, vendorId: $('#iV').value, invoiceNo: $('#iNo').value.trim(), amount: r2($('#iAmt').value), invoiceDate: $('#iDate').value, dueDate: $('#iDue').value, memo: $('#iMemo').value.trim(), note: $('#iNote').value.trim(), product: $('#iAcc').value, poNo: $('#iPo').value.trim() };
+    if (doc.lines && doc.lines.length === 1) delete doc.lines;
+    if (!doc.vendorId || !doc.invoiceDate || !$('#iAmt').value) return toast(t('required'), true);
+    if ($('#iRev') && $('#iRev').checked) { doc.needsReview = false; doc.reviewFlags = []; }
+    if (isNew) doc.seq = Date.now();
+    await Store.put('invoices', doc); closeModal(); toast(t('savedT')); render();
+  };
+}
+ACT.delInv = async el => {
+  if (!confirm(t('confirmDel'))) return;
+  const id = el.dataset.id; const inv = S.invoices.find(i => i.id === id);
+  for (const p of S.payments.filter(p => (p.allocations || []).some(a => a.invoiceId === id))) { p.allocations = p.allocations.filter(a => a.invoiceId !== id); await Store.put('payments', p); }
+  await Store.del('invoices', id); closeModal(); toast(t('deleted')); render();
+};
+
+/* ---------- payment modal ---------- */
+function paymentModal(pay, preset = {}) {
+  const isNew = !pay; pay = pay ? JSON.parse(JSON.stringify(pay)) : { vendorId: preset.vendorId || '', date: todayStr(), amount: '', fee: 0, method: 'Wire', ref: '', memo: '', allocations: [] };
+  const own = new Map((pay.allocations || []).map(a => [a.invoiceId, +a.amount]));
+  const body = `<div class="form">
+    <div class="f full"><label>${t('vendor')} *</label><select class="inp" id="pV" ${pay.allocations.length && !isNew ? 'disabled' : ''}>${vendorOptions(pay.vendorId, true, true)}</select></div>
+    <div class="f"><label>${t('payDate')}</label><input class="inp" type="date" id="pD" value="${pay.date || ''}"></div>
+    <div class="f"><label>${t('method')}</label><select class="inp" id="pM"><option value="">—</option>${METHODS.map(m => `<option value="${m}" ${pay.method === m ? 'selected' : ''}>${t('methods_' + m)}</option>`).join('')}</select></div>
+    <div class="f"><label>${t('amount')} (USD) *</label><input class="inp" type="number" step="0.01" id="pA" value="${pay.amount}"></div>
+    <div class="f"><label>${t('fee')}</label><input class="inp" type="number" step="0.01" id="pF" value="${pay.fee || ''}"><span class="hint">${t('adjHint')}</span></div>
+    <div class="f"><label>${t('ref')}</label><input class="inp" id="pR" value="${esc(pay.ref || '')}" placeholder="Check # / ACH / Wire ref"></div>
+    <div class="f"><label>${t('memo')}</label><input class="inp" id="pMemo" value="${esc(pay.memo || '')}"></div>
+  </div>
+  ${pay.needsReview ? `<div class="warnbox" style="margin-top:12px">${(pay.reviewFlags || []).map(k => '• ' + t('pv_' + k)).join('<br>')}<br><label class="chk" style="margin-top:6px;color:var(--warn)"><input type="checkbox" id="pRev" checked> ${t('clearReview')}</label></div>` : ''}
+  <div style="margin-top:16px;display:flex;align-items:center;gap:8px"><b style="font-size:13px">${t('appliedTo')}</b><span class="sp" style="flex:1"></span><button class="btn sm ed" id="pAuto">${t('autoAlloc')}</button></div>
+  <div class="tbl-wrap" style="max-height:300px;margin-top:6px" id="pAllocBox"></div>
+  <div class="pill-sum" id="pSum"></div>`;
+  const foot = `${!isNew ? `<button class="btn danger ed" data-act="delPay" data-id="${pay.id}">${t('del')}</button>` : ''}<span class="sp"></span><button class="btn" data-act="closeModal">${t('cancel')}</button><button class="btn pri ed" id="pSave">${t('save')}</button>`;
+  openModal({ title: isNew ? t('recordPayment') : t('paymentDetail'), body, foot, wide: true });
+  const c = compute({ asOf: '2999-12-31' });
+  let rows = [];
+  const buildRows = () => {
+    const vid = $('#pV').value;
+    rows = S.invoices.filter(i => i.vendorId === vid).map(i => { const x = c.inv.get(i.id); const avail = r2((x ? x.open : +i.amount) + (own.get(i.id) || 0)); return { i, avail, alloc: own.get(i.id) || 0 }; })
+      .filter(r => r.avail > 0.004 || r.alloc > 0).sort((a, b) => (a.i.invoiceDate || '').localeCompare(b.i.invoiceDate || '') || (a.i.seq || 0) - (b.i.seq || 0));
+    if (isNew && preset.invoiceIds && vid === preset.vendorId) rows.forEach(r => { if (preset.invoiceIds.includes(r.i.id)) r.alloc = r.avail; });
+    drawRows();
+    if (isNew && preset.invoiceIds && !$('#pA').value) { $('#pA').value = r2(rows.reduce((s, r) => s + r.alloc, 0)); }
+    sum();
+  };
+  const drawRows = () => {
+    $('#pAllocBox').innerHTML = rows.length ? `<table class="t alloc"><thead><tr><th></th><th>${t('invDate')}</th><th>${t('invNo')}</th><th>${t('memo')}</th><th class="num">${t('open')}</th><th class="num">${t('applied')}</th></tr></thead><tbody>${rows.map((r, k) => `<tr><td><input type="checkbox" data-k="${k}" class="pChk" ${r.alloc > 0 ? 'checked' : ''}></td><td>${r.i.invoiceDate}</td><td>${esc(r.i.invoiceNo)}</td><td class="wrap muted">${esc(r.i.memo)}</td><td class="num">${money(r.avail)}</td><td class="num"><input class="inp pAl" data-k="${k}" type="number" step="0.01" value="${r.alloc ? r2(r.alloc) : ''}"></td></tr>`).join('')}</tbody></table>` : `<div class="muted" style="padding:10px">${LANG === 'ko' ? '미수 인보이스가 없습니다 — 미배분 입금(선수금 등)으로 저장됩니다.' : 'No open invoices — will be saved as an unapplied receipt (prepayment).'}</div>`;
+    $$('.pChk').forEach(ch => ch.onchange = () => { const r = rows[ch.dataset.k]; if (ch.checked) { const rem = r2((+$('#pA').value || 0) + (+$('#pF').value || 0) - rows.reduce((s, x) => s + x.alloc, 0)); r.alloc = $('#pA').value ? Math.max(0, Math.min(r.avail, rem)) || r.avail : r.avail; } else r.alloc = 0; drawRows(); sum(); });
+    $$('.pAl').forEach(inp => inp.oninput = () => { rows[inp.dataset.k].alloc = r2(inp.value); sum(); });
+  };
+  const sum = () => {
+    const amt = +$('#pA').value || 0, fee = +$('#pF').value || 0, al = r2(rows.reduce((s, r) => s + (+r.alloc || 0), 0)); const un = r2(amt + fee - al);
+    $('#pSum').innerHTML = `<span>${t('amount')} <b>${money(amt)}</b></span><span>${t('applied')} <b>${money(al)}</b></span><span>${t('fee')} <b>${money(fee)}</b></span><span>${t('unapplied')} <b style="${un < -0.004 ? 'color:var(--bad)' : ''}">${money(un)}</b></span>${un > 0.004 ? `<span class="muted" style="flex-basis:100%">${t('unappliedNote')}</span>` : ''}`;
+  };
+  $('#pV').onchange = () => { own.clear(); buildRows(); };
+  $('#pA').oninput = sum; $('#pF').oninput = sum;
+  $('#pAuto').onclick = () => { let rem = r2((+$('#pA').value || 0) + (+$('#pF').value || 0)); rows.forEach(r => { const a = Math.max(0, Math.min(r.avail, rem)); r.alloc = r2(a); rem = r2(rem - a); }); drawRows(); sum(); };
+  buildRows();
+  $('#pSave').onclick = async () => {
+    const amt = r2($('#pA').value); if (!$('#pV').value) return toast(t('vendorReq'), true); if (!amt) return toast(t('amtReq'), true);
+    for (const r of rows) if (r.alloc > r.avail + 0.004) return toast(`${r.i.invoiceNo}: ${t('applied')} > ${t('open')}`, true);
+    const doc = { ...pay, vendorId: $('#pV').value, date: $('#pD').value, method: $('#pM').value, amount: amt, fee: r2($('#pF').value), ref: $('#pR').value.trim(), memo: $('#pMemo').value.trim(), allocations: rows.filter(r => r.alloc > 0.004).map(r => ({ invoiceId: r.i.id, amount: r2(r.alloc) })) };
+    if (payUnapplied(doc) < -0.004) return toast(t('overAlloc'), true);
+    if (doc.needsReview && $('#pRev') && $('#pRev').checked) { doc.needsReview = false; doc.reviewFlags = []; }
+    await Store.put('payments', doc); closeModal(); toast(t('savedT')); render();
+  };
+}
+ACT.editPay = el => paymentModal(S.payments.find(p => p.id === el.dataset.id));
+ACT.newPay = el => paymentModal(null, { vendorId: el.dataset.vendor || UI.pay.vendor || '' });
+ACT.delPay = async el => { if (!confirm(t('confirmDel'))) return; await Store.del('payments', el.dataset.id); closeModal(); toast(t('deleted')); render(); };
+
+/* =================== PAYMENTS =================== */
+function vPayments() {
+  if (!S.vendors.length) return welcome();
+  const f = UI.pay; const q = f.q.toLowerCase();
+  const ok = id => UI.inclIC || !isIC(vendorById(id));
+  let list = S.payments.filter(p => ok(p.vendorId) && (!f.review || p.needsReview) && (!f.vendor || p.vendorId === f.vendor) && (!f.method || p.method === f.method) && (!f.from || (p.date || '') >= f.from) && (!f.to || (p.date || '9') <= f.to)
+    && (!q || `${vName(p.vendorId)} ${p.ref} ${p.memo} ${p.amount} ${(p.allocations || []).map(a => S.invoices.find(i => i.id === a.invoiceId)?.invoiceNo).join(' ')}`.toLowerCase().includes(q)));
+  list.sort((a, b) => (b.date || '9999').localeCompare(a.date || '9999'));
+  const tot = list.reduce((s, p) => s + (+p.amount || 0), 0);
+  const shown = list.slice(0, f.limit);
+  let h = pageHead(t('payments'), t('showing', { n: shown.length, m: list.length }), `<label class="chk"><input type="checkbox" id="inclIC" ${UI.inclIC ? 'checked' : ''}> ${t('inclIC')}</label><button class="btn pri ed" data-act="newPay">＋ ${t('recordPayment')}</button>`);
+  h += `<div class="filters"><input class="inp" id="gq" placeholder="${t('search')}" value="${esc(f.q)}" style="width:220px"><select class="inp" id="gv">${vendorOptions(f.vendor).replace(t('selVendor'), LANG === 'ko' ? '전체 업체' : 'All vendors')}</select>
+  <label class="chk"><input type="checkbox" id="grv" ${f.review ? 'checked' : ''}> ${t('needReview')}</label>
+  <select class="inp" id="gm"><option value="">${t('method')}: ${t('all')}</option>${METHODS.map(m => `<option value="${m}" ${f.method === m ? 'selected' : ''}>${t('methods_' + m)}</option>`).join('')}</select>
+  <label class="chk">${t('from')} <input type="date" class="inp" id="gf" value="${f.from}"></label><label class="chk">${t('to')} <input type="date" class="inp" id="gt" value="${f.to}"></label>
+  <span style="flex:1"></span><span class="pill-sum"><span>${t('total')} <b>${money(tot)}</b></span></span></div>`;
+  h += `<div class="card"><div class="tbl-wrap tbl-scroll"><table class="t"><thead><tr><th>${t('payDate')}</th><th>${t('vendor')}</th><th>${t('method')}</th><th>${t('ref')} / ${t('memo')}</th><th>${t('appliedTo')}</th><th class="num">${t('amount')}</th><th class="num">${t('fee')}</th><th class="num">${t('unapplied')}</th><th></th></tr></thead><tbody>
+  ${shown.map(p => { const un = payUnapplied(p); const invs = (p.allocations || []).map(a => S.invoices.find(i => i.id === a.invoiceId)).filter(Boolean); return `<tr><td>${p.date || `<span class="b review">${t('noDate')}</span>`}${p.needsReview ? ` <span class="b review" title="${esc((p.reviewFlags || []).map(k => t('pv_' + k)).join('\n'))}">!</span>` : ''}</td><td class="wrap"><a class="link" data-act="vendor" data-id="${p.vendorId}">${esc(vName(p.vendorId))}</a></td><td>${p.method ? t('methods_' + p.method) : '<span class="muted">—</span>'}</td><td class="wrap muted">${esc([p.ref, p.memo].filter(Boolean).join(' · '))}</td><td class="wrap" title="${esc(invs.map(i => i.invoiceNo).join(', '))}">${invs.length ? esc(invs[0].invoiceNo) + (invs.length > 1 ? ` +${invs.length - 1}` : '') : '<span class="muted">—</span>'}</td><td class="num">${money(p.amount)}</td><td class="num ${p.fee ? '' : 'muted'}">${p.fee ? money(p.fee) : '–'}</td><td class="num ${Math.abs(un) > 0.004 ? '' : 'muted'}">${Math.abs(un) > 0.004 ? money(un) : '–'}</td><td><button class="btn sm" data-act="editPay" data-id="${p.id}">${t('edit')}</button></td></tr>`; }).join('') || `<tr><td colspan="9" class="empty">${t('noData')}</td></tr>`}
+  </tbody></table>${list.length > f.limit ? `<div style="padding:12px;text-align:center"><button class="btn" data-act="morePay">+ ${list.length - f.limit}</button></div>` : ''}</div></div>`;
+  setTimeout(() => {
+    $('#gq').oninput = debounce(e => { UI.pay.q = e.target.value; render(true); }, 250);
+    $('#gv').onchange = e => { UI.pay.vendor = e.target.value; render(); }; $('#gm').onchange = e => { UI.pay.method = e.target.value; render(); }; $('#grv').onchange = e => { UI.pay.review = e.target.checked; render(); };
+    $('#gf').onchange = e => { UI.pay.from = e.target.value; render(); }; $('#gt').onchange = e => { UI.pay.to = e.target.value; render(); };
+  });
+  return h;
+}
+ACT.morePay = () => { UI.pay.limit += 500; render(); };
+
+/* =================== VENDORS =================== */
+function vVendors() {
+  const c = compute({ asOf: UI.asOf, inclIC: true });
+  const q = UI.ven.q.toLowerCase();
+  const list = S.vendors.filter(v => (UI.ven.inactive || v.active !== false) && (!q || `${v.name} ${(v.aliases || []).join(' ')}`.toLowerCase().includes(q))).sort((a, b) => a.name.localeCompare(b.name));
+  let h = pageHead(t('vendors'), t('vendorsN', { n: list.length }), `<button class="btn pri ed" data-act="newVendor">＋ ${t('addVendor')}</button>`);
+  h += `<div class="filters"><input class="inp" id="vq" placeholder="${t('search')}" value="${esc(UI.ven.q)}" style="width:240px"><label class="chk"><input type="checkbox" id="vin" ${UI.ven.inactive ? 'checked' : ''}> ${LANG === 'ko' ? '비활성 포함' : 'Show inactive'}</label></div>`;
+  h += `<div class="card"><div class="tbl-wrap tbl-scroll"><table class="t"><thead><tr><th>${t('name')}</th><th>${t('group')}</th><th>${t('terms')}</th><th>${t('aliases')}</th><th class="num">${t('invCount')}</th><th>${t('lastInv')}</th><th class="num">${t('balance')}</th></tr></thead><tbody>
+  ${list.map(v => { const r = c.byV.get(v.id); const n = S.invoices.filter(i => i.vendorId === v.id).length; return `<tr class="click" data-act="vendor" data-id="${v.id}"><td>${esc(v.name)} ${v.active === false ? `<span class="b ic">${t('inactive')}</span>` : ''}</td><td>${isIC(v) ? `<span class="b ic">${t('intercompany')}</span>` : `<span class="muted">${t('operating')}</span>`}</td><td>${termsLabel(v.terms)}</td><td class="wrap muted">${esc((v.aliases || []).join(', '))}</td><td class="num">${n || ''}</td><td>${r?.lastInv || ''}</td><td class="num">${r && Math.abs(r.balance) > 0.004 ? money(r.balance) : '<span class="muted">–</span>'}</td></tr>`; }).join('')}
+  </tbody></table></div></div>`;
+  setTimeout(() => { $('#vq').oninput = debounce(e => { UI.ven.q = e.target.value; render(true); }, 200); $('#vin').onchange = e => { UI.ven.inactive = e.target.checked; render(); }; });
+  return h;
+}
+function vendorForm(v) {
+  const tr = v.terms || { type: 'net', days: shared('defTerms', 30) };
+  return `<div class="form">
+    <div class="f"><label>${t('name')} *</label><input class="inp" id="vfName" value="${esc(v.name || '')}"></div>
+    <div class="f"><label>${t('group')}</label><select class="inp" id="vfGroup"><option value="operating" ${v.group !== 'intercompany' ? 'selected' : ''}>${t('operating')}</option><option value="intercompany" ${v.group === 'intercompany' ? 'selected' : ''}>${t('intercompany')}</option></select></div>
+    <div class="f"><label>${t('terms')}</label><div style="display:flex;gap:6px"><select class="inp" id="vfTT" style="flex:1"><option value="net" ${tr.type === 'net' ? 'selected' : ''}>${t('termsNet')}</option><option value="dom" ${tr.type === 'dom' ? 'selected' : ''}>${t('termsDom')}</option><option value="receipt" ${tr.type === 'receipt' ? 'selected' : ''}>${t('termsRcpt')}</option></select><input class="inp" id="vfTV" type="number" style="width:80px" value="${tr.type === 'dom' ? tr.day : tr.days ?? 30}"></div></div>
+    <div class="f full"><label>${t('aliases')}</label><input class="inp" id="vfAl" value="${esc((v.aliases || []).join(', '))}"><span class="hint">${t('aliasesHint')}</span></div>
+    <div class="f"><label>${t('invRegex')}</label><input class="inp" id="vfRx" value="${esc(v.invRegex || '')}"><span class="hint">${t('invRegexHint')}</span></div>
+    <div class="f"><label>${t('active')}</label><label class="chk"><input type="checkbox" id="vfAct" ${v.active !== false ? 'checked' : ''}> ${t('active')}</label></div>
+    <div class="f full"><label>${t('notes')}</label><input class="inp" id="vfNotes" value="${esc(v.notes || '')}"></div>
+  </div>`;
+}
+function readVendorForm(v) {
+  const tt = $('#vfTT').value, tv = +$('#vfTV').value;
+  const name = $('#vfName').value.trim(); if (!name) { toast(t('name') + '?', true); return null; }
+  if (S.vendors.some(x => x.id !== v.id && normKey(x.name) === normKey(name))) { toast(t('vendorExists'), true); return null; }
+  const rx = $('#vfRx').value.trim(); if (rx) { try { new RegExp(rx); } catch { toast(t('regexErr'), true); return null; } }
+  return { ...v, name, group: $('#vfGroup').value, terms: tt === 'dom' ? { type: 'dom', day: tv || 25 } : tt === 'receipt' ? { type: 'receipt' } : { type: 'net', days: isNaN(tv) ? 30 : tv }, aliases: $('#vfAl').value.split(',').map(s => s.trim()).filter(Boolean), invRegex: rx, active: $('#vfAct').checked, notes: $('#vfNotes').value.trim() };
+}
+ACT.newVendor = (el, e, preset = {}) => {
+  openModal({ title: t('newVendor'), body: vendorForm({ name: preset.name || '', group: 'operating' }), foot: `<span class="sp"></span><button class="btn" data-act="closeModal">${t('cancel')}</button><button class="btn pri ed" id="vfSave">${t('save')}</button>`, wide: true });
+  $('#vfSave').onclick = async () => { const d = readVendorForm({}); if (!d) return; const doc = await Store.put('vendors', d); closeModal(); toast(t('savedT')); if (preset.onSaved) preset.onSaved(doc); else render(); };
+};
+
+function vVendor(id) {
+  const v = vendorById(id); if (!v) return `<div class="empty">${t('vendorNotFound')}</div>`;
+  const c = compute({ asOf: UI.asOf, inclIC: true }); const r = c.byV.get(id) || { balance: 0, overdue: 0, open: 0, credit: 0 };
+  let h = pageHead(`<a class="link" href="#vendors" style="font-weight:500;font-size:14px">${t('vendors')}</a> <span class="muted">/</span> ${esc(v.name)}`, `${isIC(v) ? `<span class="b ic">${t('intercompany')}</span>` : ''} ${termsLabel(v.terms)}`,
+    `<label class="chk">${t('asOf')} <input type="date" class="inp" id="asOf" value="${UI.asOf}"></label><button class="btn ed" data-act="newPay" data-vendor="${id}">💳 ${t('recordPayment')}</button><button class="btn pri ed" data-act="newInv" data-vendor="${id}">＋ ${t('newInvoice')}</button>`);
+  const kp = (l, val, cls = '') => `<div class="card kpi ${cls}" style="cursor:default"><div class="l">${l}</div><div class="v">${val}</div></div>`;
+  h += `<div class="vhead">${kp(t('balance'), money(r.balance))}${kp(t('overdue'), money(r.overdue), r.overdue > 0 ? 'bad' : '')}${kp(t('openCount'), r.open || 0)}${kp(t('unapplied'), money(r.credit || 0))}</div>`;
+  h += `<div class="tabs"><button class="${UI.vendorTab === 'ledger' ? 'on' : ''}" data-act="vtab" data-t="ledger">${t('ledger')}</button><button class="${UI.vendorTab === 'set' ? 'on' : ''}" data-act="vtab" data-t="set">${t('vendorInfo')}</button></div>`;
+  if (UI.vendorTab === 'set') {
+    h += `<div class="card"><div class="card-b">${vendorForm(v)}<div style="display:flex;gap:8px;margin-top:16px"><button class="btn danger ed" data-act="delVendor" data-id="${id}">${t('del')}</button><span style="flex:1"></span><button class="btn pri ed" id="vfSave">${t('save')}</button></div></div></div>`;
+    setTimeout(() => { $('#vfSave').onclick = async () => { const d = readVendorForm(v); if (!d) return; await Store.put('vendors', d); toast(t('savedT')); render(); }; });
+  } else {
+    const ev = [];
+    S.invoices.filter(i => i.vendorId === id).forEach(i => ev.push({ d: i.invoiceDate || '', k: 0, s: i.seq || 0, i }));
+    S.payments.filter(p => p.vendorId === id).forEach(p => ev.push({ d: p.date || '', k: 1, s: 0, p }));
+    ev.sort((a, b) => (a.d || '9999').localeCompare(b.d || '9999') || a.k - b.k || a.s - b.s);
+    let bal = 0;
+    const rows = ev.map(e => {
+      if (e.i) { bal = r2(bal + (+e.i.amount || 0)); const x = c.inv.get(e.i.id); const st = invStatus(e.i, x); return `<tr class="click" data-act="editInv" data-id="${e.i.id}"><td>${e.d || '—'}</td><td><span class="b open">${t('charge')}</span></td><td class="wrap">${esc(e.i.invoiceNo)}</td><td class="wrap muted">${esc(e.i.memo)}</td><td class="num">${money(e.i.amount)}</td><td class="num"></td><td class="num">${money(bal)}</td><td>${badge(st)}${e.i.needsReview ? ' <span class="b review">!</span>' : ''}</td></tr>`; }
+      bal = r2(bal - (+e.p.amount || 0) - (+e.p.fee || 0)); const invs = (e.p.allocations || []).map(a => S.invoices.find(i => i.id === a.invoiceId)?.invoiceNo).filter(Boolean);
+      return `<tr class="click" data-act="editPay" data-id="${e.p.id}"><td>${e.d || '<span class="b review">' + t('noDate') + '</span>'}</td><td><span class="b paid">${t('payment')}</span></td><td class="wrap muted">${esc(invs.join(', ') || e.p.ref || '')}</td><td class="wrap muted">${esc([e.p.method ? t('methods_' + e.p.method) : '', e.p.memo, e.p.fee ? `${t('fee')} ${money(e.p.fee)}` : ''].filter(Boolean).join(' · '))}</td><td class="num"></td><td class="num">${money(e.p.amount)}</td><td class="num">${money(bal)}</td><td>${e.p.needsReview ? '<span class="b review">!</span>' : ''}</td></tr>`;
+    }).join('');
+    h += `<div class="card"><div class="tbl-wrap tbl-scroll"><table class="t"><thead><tr><th>${t('date')}</th><th>${t('type')}</th><th>${t('invNo')}</th><th>${t('memo')}</th><th class="num">${t('charge')}</th><th class="num">${t('payment')}</th><th class="num">${t('balance')}</th><th>${t('status')}</th></tr></thead><tbody>${rows || `<tr><td colspan="8" class="empty">${t('noData')}</td></tr>`}</tbody></table></div></div>`;
+  }
+  return h;
+}
+ACT.vtab = el => { UI.vendorTab = el.dataset.t; render(); };
+ACT.delVendor = async el => {
+  const id = el.dataset.id; if (S.invoices.some(i => i.vendorId === id) || S.payments.some(p => p.vendorId === id)) return toast(t('hasInvoices'), true);
+  if (!confirm(t('confirmDel'))) return; await Store.del('vendors', id); location.hash = 'vendors';
+};
+
+/* =================== SETTINGS =================== */
+function vSettings() {
+  const info = shared('importInfo', null);
+  const sec = (title, body, cls = '') => `<div class="card set-sec ${cls}"><div class="card-h"><h3>${title}</h3></div><div class="card-b">${body}</div></div>`;
+  let h = pageHead(t('settings'), CLOUD ? `${esc(AUTH.name)} · ${t('role_' + AUTH.role)}` : '');
+  h += `<div class="row3" style="align-items:start"><div>`;
+  h += sec(t('lang'), `<div class="form"><div class="f"><label>${t('lang')}</label><select class="inp" id="sLang"><option value="ko" ${LANG === 'ko' ? 'selected' : ''}>한국어 (Korean)</option><option value="en" ${LANG === 'en' ? 'selected' : ''}>English (영어)</option></select></div>
+    ${CLOUD ? `<div class="f"><label>${t('email')}</label><input class="inp" disabled value="${esc(AUTH.email)}"></div>` : `<div class="f"><label>${t('yourName')}</label><input class="inp" id="sUser" value="${esc(Pref.get('user', ''))}"></div>`}</div>`);
+  h += sec(t('aiProxy'), `<p>${t('aiProxyDesc')}</p><div class="form">
+    <div class="f full"><label>URL</label><input class="inp" disabled value="${esc(CFG.aiProxyUrl || '—')}"></div>
+    <div class="f"><label>${t('model')}</label><select class="inp adm-en" id="sModel" ${can('admin') ? '' : 'disabled'}>${['claude-sonnet-4-5', 'claude-haiku-4-5', 'claude-opus-4-6'].map(m => `<option ${shared('aiModel', 'claude-sonnet-4-5') === m ? 'selected' : ''}>${m}</option>`).join('')}</select></div>
+    <div class="f" style="justify-content:flex-end"><button class="btn" id="sTest">${t('testKey')}</button></div></div>`);
+  h += sec(LANG === 'ko' ? '인식·결제조건 기본값' : 'Detection & defaults', `<div class="form">
+    <div class="f full"><label>${t('selfNames')}</label><input class="inp" id="sSelf" value="${esc(shared('selfNames', ['JNF AM LLC', 'JNF AM', 'JNFAM']).join(', '))}"></div>
+    <div class="f"><label>${t('defTerms')}</label><input class="inp" id="sTerms" type="number" value="${shared('defTerms', 30)}"><span class="hint">${LANG === 'ko' ? '고객별 조건은 고객 > 고객 설정에서 따로 지정. 개별 인보이스는 입금기한 직접 입력 가능.' : 'Set per-customer terms under Customers > settings. Each invoice can also override its due date.'}</span></div>
+    <div class="f" style="justify-content:flex-end"><button class="btn pri" id="sSaveShared">${t('save')}</button></div></div>`, 'adm');
+  h += `</div><div>`;
+  h += sec(t('dataSec'), `
+    <div class="adm"><p><b>${t('importXlsx')}</b><br>${t('importDesc')}</p>
+    ${info ? `<div class="okbox">${esc(info.file)} · ${info.at.slice(0, 16).replace('T', ' ')}${info.by ? ' · ' + esc(info.by) : ''}</div>` : ''}
+    <input type="file" id="sXlsx" accept=".xlsx,.xls" style="display:none"><button class="btn pri" onclick="document.getElementById('sXlsx').click()">⤒ ${t('importXlsx').split('(')[0]}</button>
+    <hr style="border:0;border-top:1px solid var(--line);margin:16px 0"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button class="btn" data-act="exportXlsx">⤓ ${t('exportXlsx')}</button><button class="btn" id="sBackup">⤓ ${t('backup')}</button></div>
+    <div class="adm" style="display:flex;gap:8px;margin-top:10px"><input type="file" id="sRestoreF" accept=".json" style="display:none"><button class="btn" onclick="document.getElementById('sRestoreF').click()">⤒ ${t('restore')}</button><span style="flex:1"></span><button class="btn danger" id="sReset">${t('resetAll')}</button></div>
+    <div class="muted" style="font-size:12px;margin-top:12px">${CLOUD ? t('online') : t('local')} · ${t('countsLine', { v: S.vendors.length, i: S.invoices.length, p: S.payments.length })}</div>`);
+  h += `</div></div>`;
+  setTimeout(() => {
+    const on = (id, ev, fn) => { const el = $('#' + id); if (el) el[ev] = fn; };
+    on('sLang', 'onchange', e => setLang(e.target.value));
+    on('sUser', 'onchange', e => { Pref.set('user', e.target.value.trim()); renderNav(); toast(t('savedT')); });
+    on('sModel', 'onchange', async e => { await setShared('aiModel', e.target.value); toast(t('savedT')); });
+    on('sTest', 'onclick', async () => { try { const r = await aiProxyCall({ action: 'ping' }); toast('OK ✓ ' + (r.email || '')); } catch (e) { toast(e.message, true); } });
+    on('sSaveShared', 'onclick', async () => { await setShared('selfNames', $('#sSelf').value.split(',').map(s => s.trim()).filter(Boolean)); await setShared('defTerms', +$('#sTerms').value || 30); toast(t('savedT')); render(); });
+    on('sXlsx', 'onchange', async e => { const f = e.target.files[0]; if (!f) return; if (S.invoices.length && !confirm(t('importDesc'))) return; try { toast(t('loading')); const res = await runImport(f); showImportReport(res); render(); } catch (err) { console.error(err); toast(err.message, true); } e.target.value = ''; });
+    on('sBackup', 'onclick', () => backup());
+    on('sRestoreF', 'onchange', async e => { const f = e.target.files[0]; if (!f) return; if (!confirm(t('restoreQ'))) return; try { await restore(f); toast(t('importDone')); render(); } catch (err) { toast(err.message, true); } e.target.value = ''; });
+    on('sReset', 'onclick', async () => { if (!confirm(t('resetQ'))) return; await Store.clear(true); render(); });
+  });
+  return h;
+}
+function showImportReport(res) {
+  const totEx = r2(res.report.reduce((s, r) => s + r.excelBal, 0)), totApp = r2(res.report.reduce((s, r) => s + r.appBal, 0));
+  const review = S.invoices.filter(i => i.needsReview).length, payRv = S.payments.filter(p => p.needsReview).length;
+  const cents = S.invoices.filter(i => (i.reviewFlags || []).includes('cent')).length;
+  const lump = S.payments.filter(p => (p.reviewFlags || []).includes('lump')).length;
+  const ko = LANG === 'ko';
+  const body = `<div class="okbox">${t('importDone')}: ${t('countsLine', { v: res.vendors.length, i: res.invoices.length, p: res.payments.length })}</div>
+   <div class="pill-sum" style="margin-bottom:12px"><span>${t('excelBal')} <b>${money(totEx)}</b></span><span>${t('appBal')} <b>${money(totApp)}</b></span><span>${t('diff')} <b style="${Math.abs(totApp - totEx) > 0.004 ? 'color:var(--bad)' : ''}">${money(r2(totApp - totEx))}</b></span></div>
+   <table class="t"><thead><tr><th>${t('vendor')}</th><th class="num">${t('excelBal')}</th><th class="num">${t('appBal')}</th><th class="num">${t('diff')}</th><th class="num">${t('unapplied')}</th></tr></thead><tbody>${res.report.map(r => `<tr><td>${esc(r.name)}</td><td class="num">${money(r.excelBal)}</td><td class="num">${money(r.appBal)}</td><td class="num ${Math.abs(r.diff) > 0.004 ? '' : 'muted'}">${Math.abs(r.diff) > 0.004 ? money(r.diff) : '–'}</td><td class="num ${Math.abs(r.credit) > 0.004 ? '' : 'muted'}">${Math.abs(r.credit) > 0.004 ? money(r.credit) : '–'}</td></tr>`).join('')}</tbody></table>
+   <div style="font-size:12px;color:var(--text-2);margin-top:12px;line-height:1.7">
+   • ${ko ? `일괄 입금 자동 배분 <b>${lump}</b>건 — 여러 인보이스를 한 번에 받은 입금을 같은 입금일 행 → 오래된 미수 순으로 배분했습니다. 입금 내역에서 "검토 필요"로 확인하세요.` : `<b>${lump}</b> lump-sum receipts were auto-allocated (same-date rows first, then oldest open). Check them under Receipts › Needs review.`}<br>
+   • ${ko ? `몇 센트만 남은 미수 인보이스 <b>${cents}</b>건 — 반올림 차이로 덜 받은 건입니다. 합의된 차이면 입금의 "조정액"으로 정리하세요.` : `<b>${cents}</b> invoices are short by a few cents (rounding). Write them off with a receipt adjustment if agreed.`}<br>
+   • ${ko ? `미배분 입금은 인보이스에 매칭되지 않은 초과 입금(1센트 초과, 정산금 등)으로, Aging에서는 오래된 미수부터 차감됩니다.` : `Unapplied = receipts larger than matched invoices (1¢ overpayments, settlements); aging nets them against the oldest open invoices.`}<br>
+   • ${ko ? `검토 필요: 인보이스 ${review}건 · 입금 ${payRv}건` : `Needs review: ${review} invoices · ${payRv} receipts`}</div>`;
+  openModal({ title: t('importReport'), body, foot: `<span class="sp"></span><button class="btn pri" data-act="closeModal">${t('close')}</button>`, wide: true });
+}
+
+/* ---------- export / backup ---------- */
+ACT.exportXlsx = () => exportWorkbook();
+function exportWorkbook() {
+  const c = compute({ asOf: UI.asOf, inclIC: true });
+  const wb = XLSX.utils.book_new();
+  const ag = [['AR Aging as of ' + UI.asOf], [], ['Customer', 'Type', 'Terms', 'Current', '1-30', '31-60', '61-90', '>90', 'Total', 'Unapplied']];
+  const vs = [...S.vendors].sort((a, b) => (a.order ?? 999) - (b.order ?? 999) || a.name.localeCompare(b.name));
+  vs.forEach(v => { const r = c.byV.get(v.id) || { aging: [0, 0, 0, 0, 0], balance: 0, credit: 0 }; ag.push([v.name, isIC(v) ? 'Other' : 'Customer', termsLabel(v.terms), ...r.aging, r.balance, r.credit || 0]); });
+  ag.push(['TOTAL', '', '', ...c.tot.aging, c.tot.balance]);
+  const ws1 = XLSX.utils.aoa_to_sheet(ag); ws1['!cols'] = [{ wch: 26 }, { wch: 10 }, { wch: 10 }, ...Array(7).fill({ wch: 14 })];
+  XLSX.utils.book_append_sheet(wb, ws1, 'AR Aging');
+  const inv = [['Customer', 'Invoice No', 'Invoice Date', 'Due Date', 'Amount', 'Received', 'Open', 'Days late', 'Status', 'Product', 'PO No', 'Memo', 'Note']];
+  [...S.invoices].sort((a, b) => vName(a.vendorId).localeCompare(vName(b.vendorId)) || (a.invoiceDate || '').localeCompare(b.invoiceDate || '')).forEach(i => { const x = c.inv.get(i.id); inv.push([vName(i.vendorId), i.invoiceNo, i.invoiceDate, x?.due || invDue(i), +i.amount, x?.applied || 0, x?.open ?? +i.amount, x && x.open > 0.004 && x.dpd > 0 ? x.dpd : '', invStatus(i, x), i.product || '', i.poNo || '', i.memo, i.note || '']); });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(inv), 'Invoices');
+  const pay = [['Customer', 'Receipt Date', 'Method', 'Reference', 'Amount', 'Adjustment', 'Applied', 'Unapplied', 'Applied To', 'Memo']];
+  [...S.payments].sort((a, b) => (a.date || '').localeCompare(b.date || '')).forEach(p => pay.push([vName(p.vendorId), p.date, p.method, p.ref, +p.amount, +p.fee || 0, r2((p.allocations || []).reduce((s, a) => s + a.amount, 0)), payUnapplied(p), (p.allocations || []).map(a => S.invoices.find(i => i.id === a.invoiceId)?.invoiceNo).join(', '), p.memo]));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(pay), 'Receipts');
+  XLSX.writeFile(wb, `JNFAM_AR_${UI.asOf}.xlsx`);
+}
+async function backup() {
+  const data = { app: 'jnfam-ar', version: 1, exportedAt: new Date().toISOString(), data: { vendors: S.vendors, invoices: S.invoices, payments: S.payments, meta: S.meta } };
+  download(`JNFAM_AR_backup_${todayStr()}.json`, new Blob([JSON.stringify(data)], { type: 'application/json' }));
+}
+async function restore(file) {
+  const j = JSON.parse(await file.text()); if (j.app !== 'jnfam-ar') throw new Error(t('notBackup'));
+  await Store.clear(true);
+  for (const c of COLS) if (j.data[c]) await Store.putMany(c, j.data[c]);
+}
+
+/* =====================================================================
+   Online mode — Firebase (Auth: Microsoft 365, Firestore), roles, AI proxy.
+   Local mode is used automatically when AR_CONFIG.firebase is empty.
+   ===================================================================== */
+const CFG = window.AR_CONFIG || {};
+const CP = CFG.collectionPrefix ?? 'ar_';   // Firestore collection prefix (shared project with AP)
+const CLOUD = !!(CFG.firebase && CFG.firebase.apiKey);
+const AUTH = { user: null, email: '', name: '', role: CLOUD ? '' : 'admin', status: CLOUD ? 'init' : 'ok' };
+const ROLES = ['admin', 'editor', 'viewer'];
+const can = what => what === 'admin' ? AUTH.role === 'admin' : what === 'edit' ? (AUTH.role === 'admin' || AUTH.role === 'editor') : !!AUTH.role;
+
+Object.assign(L, {
+  users: ['Users & roles', '사용자·권한'], personName: ['Name', '이름'], role: ['Role', '권한'], role_admin: ['Admin', '관리자'], role_editor: ['Editor', '담당자'], role_viewer: ['Viewer', '조회자'],
+  roleDesc_admin: ['Users, roles, settings, Excel import', '사용자·권한·설정·엑셀 가져오기'], roleDesc_editor: ['Register/edit invoices, receipts, customers', '인보이스·입금·고객 등록/수정'], roleDesc_viewer: ['View and export only', '조회·엑셀 내보내기만'],
+  signIn: ['Sign in with Microsoft 365', 'Microsoft 365 계정으로 로그인'], signOut: ['Sign out', '로그아웃'],
+  gateTitle: ['JNFAM Accounts Receivable', 'JNFAM 미수금(AR) 관리'], gateSub: ['Sign in with your company Microsoft account. Only approved users can see AR data.', '회사 Microsoft 계정으로 로그인하세요. 승인된 사용자만 AR 데이터를 볼 수 있습니다.'],
+  pending: ['Access requested', '접근 권한 요청됨'], pendingSub: ['Your request was sent to the administrator. You can use the app once it is approved.', '관리자에게 요청을 보냈습니다. 승인되면 사용할 수 있습니다.'],
+  disabled: ['Account disabled', '사용 중지된 계정'], disabledSub: ['Your account has been disabled. Contact the administrator.', '계정이 사용 중지되었습니다. 관리자에게 문의하세요.'],
+  loading: ['Loading…', '불러오는 중…'], requests: ['Access requests', '접근 요청'], approve: ['Approve', '승인'], dismiss: ['Dismiss', '거절'],
+  addUser: ['Add user', '사용자 추가'], email: ['Email', '이메일'], lastLogin: ['Last login', '최근 로그인'], you: ['you', '본인'], online: ['Online · Firebase', '온라인 · Firebase'],
+  aiProxy: ['AI server (company key)', 'AI 서버 (회사 키)'], aiProxyDesc: ['Invoices are sent to the company AI server; no personal API key needed.', '인보이스를 회사 AI 서버로 보냅니다. 개인 API 키는 필요 없습니다.'],
+  aiNoProxy: ['AI server URL is not configured.', 'AI 서버 주소가 설정되지 않았습니다.'], aiLocalOnly: ['AI reading is available in the online version.', 'AI 읽기는 온라인 버전에서 사용할 수 있습니다.'],
+  noPerm: ['You do not have permission for this.', '이 작업에 대한 권한이 없습니다.'], notInList: ['Not registered', '미등록'],
+  userExists: ['User already exists', '이미 등록된 사용자입니다'], lastAdmin: ['At least one active admin is required.', '활성 관리자가 최소 1명 필요합니다.'],
+});
+
+/* ---------- Firestore adapter (same interface as LocalStore) ---------- */
+const CloudStore = {
+  mode: 'cloud', db: null, unsub: [],
+  async init() {
+    this.db = firebase.firestore();
+    await Promise.all(COLS.map(c => new Promise((res, rej) => {
+      let first = true;
+      this.unsub.push(this.db.collection(CP + c).onSnapshot(snap => {
+        S[c] = snap.docs.map(d => d.data());
+        if (first) { first = false; res(); } else scheduleRender();
+      }, err => { if (first) { first = false; rej(err); } else toast(err.message, true); }));
+    })));
+  },
+  stop() { this.unsub.forEach(u => u()); this.unsub = []; },
+  stamp: LocalStore.stamp,
+  clean(d) { return JSON.parse(JSON.stringify(d)); },
+  upsert(col, doc) { const i = S[col].findIndex(x => x.id === doc.id); if (i >= 0) S[col][i] = doc; else S[col].push(doc); },
+  async put(col, doc, noStamp) {
+    if (!doc.id) doc.id = uid(); if (!noStamp) this.stamp(doc);
+    const d = this.clean(doc); await this.db.collection(CP + col).doc(String(d.id)).set(d); this.upsert(col, d); return d;
+  },
+  async putMany(col, docs) {
+    for (let i = 0; i < docs.length; i += 400) {
+      const b = this.db.batch();
+      docs.slice(i, i + 400).forEach(d => { if (!d.id) d.id = uid(); b.set(this.db.collection(CP + col).doc(String(d.id)), this.clean(d)); });
+      await b.commit();
+    }
+    const map = new Map(S[col].map(x => [x.id, x])); docs.forEach(d => map.set(d.id, this.clean(d))); S[col] = [...map.values()];
+  },
+  async del(col, id) { await this.db.collection(CP + col).doc(String(id)).delete(); S[col] = S[col].filter(x => x.id !== id); },
+  async clear() {
+    for (const c of COLS) {
+      const snap = await this.db.collection(CP + c).get();
+      for (let i = 0; i < snap.docs.length; i += 400) { const b = this.db.batch(); snap.docs.slice(i, i + 400).forEach(d => b.delete(d.ref)); await b.commit(); }
+      S[c] = [];
+    }
+  },
+  async putFile() { throw new Error('Files are not stored'); }, async getFile() { return null; }, async delFile() { }, async allFiles() { return []; },
+};
+let _rt = null;
+function scheduleRender() {
+  clearTimeout(_rt);
+  _rt = setTimeout(() => {
+    const a = document.activeElement;
+    // don't wipe what someone is typing in a form; re-render when they leave the field
+    if (a && $('#view').contains(a) && /INPUT|TEXTAREA|SELECT/.test(a.tagName) && !/^(fq|gq|vq)$/.test(a.id)) { a.addEventListener('blur', () => scheduleRender(), { once: true }); return; }
+    render(true);
+  }, 350);
+}
+
+/* ---------- Auth (Firebase + Microsoft 365) ---------- */
+function msProvider(hint) {
+  const p = new firebase.auth.OAuthProvider('microsoft.com');
+  const prm = { tenant: CFG.msTenant || 'organizations' };
+  if (hint) prm.login_hint = hint; else prm.prompt = 'select_account';
+  p.setCustomParameters(prm);
+  p.addScope('User.Read');
+  return p;
+}
+function gate(state) {
+  AUTH.status = state; let g = $('#gate');
+  if (state === 'ok') { if (g) g.remove(); return; }
+  if (!g) { g = document.createElement('div'); g.id = 'gate'; document.body.appendChild(g); }
+  const msg = { login: ['gateSub', ''], pending: ['pending', 'pendingSub'], disabled: ['disabled', 'disabledSub'], init: ['loading', ''], error: ['storageErr', ''] }[state] || ['loading', ''];
+  g.innerHTML = `<div class="gate-card"><div class="logo" style="margin:0 auto 14px;width:46px;height:46px;font-size:16px">AR</div><h2>${t('gateTitle')}</h2>
+    ${state === 'init' ? `<p><span class="spin"></span> ${t('loading')}</p>` : ''}
+    ${state === 'login' ? `<p>${t('gateSub')}</p><button class="btn pri" id="gSignIn" style="padding:11px 20px;font-size:14px">${MS_ICON} ${t('signIn')}</button>` : ''}
+    ${state === 'pending' || state === 'disabled' ? `<div class="${state === 'pending' ? 'warnbox' : 'errbox'}" style="text-align:left"><b>${t(msg[0])}</b><br>${t(msg[1])}<br><span class="muted">${esc(AUTH.email)}</span></div><button class="btn" id="gOut">${t('signOut')}</button>` : ''}
+    ${state === 'error' ? `<div class="errbox">${esc(AUTH.error || '')}</div><button class="btn" id="gOut">${t('signOut')}</button>` : ''}
+    <div class="lang-toggle" style="max-width:200px;margin:22px auto 0"><button data-lang="ko" class="${LANG === 'ko' ? 'on' : ''}">한국어</button><button data-lang="en" class="${LANG === 'en' ? 'on' : ''}">English</button></div></div>`;
+  $$('#gate .lang-toggle button').forEach(b => b.onclick = () => { setLang(b.dataset.lang); gate(AUTH.status); });
+  if ($('#gSignIn')) $('#gSignIn').onclick = async () => {
+    try { await firebase.auth().signInWithPopup(msProvider()); }
+    catch (e) { if (!/popup-closed|cancelled/.test(e.code || '')) toast(e.message, true); }
+  };
+  if ($('#gOut')) $('#gOut').onclick = signOut;
+}
+const MS_ICON = '<svg width="14" height="14" viewBox="0 0 21 21" style="vertical-align:-2px"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>';
+async function signOut() { CloudStore.stop(); await firebase.auth().signOut(); location.hash = ''; }
+async function cloudBoot() {
+  firebase.initializeApp(CFG.firebase);
+  try { firebase.firestore().enablePersistence({ synchronizeTabs: true }).catch(() => { }); } catch { }
+  Store = CloudStore;
+  gate('init');
+  firebase.auth().onAuthStateChanged(async u => {
+    if (!u) { AUTH.user = null; AUTH.role = ''; gate('login'); return; }
+    gate('init');
+    AUTH.user = u; AUTH.email = (u.email || (u.providerData[0] || {}).email || '').toLowerCase(); AUTH.name = u.displayName || AUTH.email;
+    const db = firebase.firestore();
+    try {
+      const ref = db.collection(CP + 'users').doc(AUTH.email);
+      let snap = await ref.get();
+      if (!snap.exists && (CFG.adminEmails || []).map(x => x.toLowerCase()).includes(AUTH.email)) {
+        await ref.set({ id: AUTH.email, email: AUTH.email, name: AUTH.name, role: 'admin', active: true, createdAt: new Date().toISOString(), createdBy: 'bootstrap' });
+        snap = await ref.get();
+      }
+      if (!snap.exists) {
+        await db.collection(CP + 'accessRequests').doc(AUTH.email).set({ id: AUTH.email, email: AUTH.email, name: AUTH.name, at: new Date().toISOString() });
+        AUTH.role = ''; gate('pending'); return;
+      }
+      const me = snap.data();
+      if (!me.active) { AUTH.role = ''; gate('disabled'); return; }
+      AUTH.role = me.role;
+      ref.update({ lastLogin: new Date().toISOString(), name: AUTH.name }).catch(() => { });
+      await CloudStore.init();
+      if (can('admin')) watchAdmin();
+      gate('ok'); render();
+    } catch (e) { console.error(e); AUTH.error = e.message; gate('error'); }
+  });
+}
+
+/* ---------- Users & roles (admin) ---------- */
+const ADM = { users: [], requests: [], unsub: [] };
+function watchAdmin() {
+  const db = firebase.firestore();
+  ADM.unsub.forEach(u => u());
+  ADM.unsub = [
+    db.collection(CP + 'users').onSnapshot(s => { ADM.users = s.docs.map(d => d.data()); if ((location.hash || '').startsWith('#users')) scheduleRender(); renderNav(); }),
+    db.collection(CP + 'accessRequests').onSnapshot(s => { ADM.requests = s.docs.map(d => d.data()); if ((location.hash || '').startsWith('#users')) scheduleRender(); renderNav(); }),
+  ];
+}
+function vUsers() {
+  if (!can('admin')) return `<div class="errbox">${t('noPerm')}</div>`;
+  const roleSel = (u) => `<select class="inp uRole" data-id="${esc(u.id)}" ${u.id === AUTH.email ? 'disabled' : ''}>${ROLES.map(r => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${t('role_' + r)}</option>`).join('')}</select>`;
+  let h = pageHead(t('users'), `${ADM.users.length}`, `<button class="btn pri" data-act="addUser">＋ ${t('addUser')}</button>`);
+  if (ADM.requests.length) h += `<div class="card" style="margin-bottom:16px"><div class="card-h"><h3>${t('requests')}</h3><span class="sp"></span><span class="b review">${ADM.requests.length}</span></div><div class="card-b"><table class="t"><tbody>${ADM.requests.map(r => `<tr><td><b>${esc(r.name || '')}</b><div class="muted">${esc(r.email)}</div></td><td class="muted">${(r.at || '').slice(0, 16).replace('T', ' ')}</td><td><select class="inp" id="rq_${esc(r.id).replace(/[^a-z0-9]/gi, '_')}">${ROLES.slice().reverse().map(x => `<option value="${x}">${t('role_' + x)}</option>`).join('')}</select></td><td class="right"><button class="btn sm pri" data-act="approveReq" data-id="${esc(r.id)}">${t('approve')}</button> <button class="btn sm" data-act="dismissReq" data-id="${esc(r.id)}">${t('dismiss')}</button></td></tr>`).join('')}</tbody></table></div></div>`;
+  h += `<div class="card"><div class="tbl-wrap"><table class="t"><thead><tr><th>${t('personName')}</th><th>${t('email')}</th><th>${t('role')}</th><th>${t('active')}</th><th>${t('lastLogin')}</th></tr></thead><tbody>
+    ${[...ADM.users].sort((a, b) => ROLES.indexOf(a.role) - ROLES.indexOf(b.role) || (a.name || '').localeCompare(b.name || '')).map(u => `<tr><td>${esc(u.name || '')} ${u.id === AUTH.email ? `<span class="b ic">${t('you')}</span>` : ''}</td><td class="muted">${esc(u.email)}</td><td>${roleSel(u)}</td><td><label class="chk"><input type="checkbox" class="uAct" data-id="${esc(u.id)}" ${u.active ? 'checked' : ''} ${u.id === AUTH.email ? 'disabled' : ''}></label></td><td class="muted">${(u.lastLogin || '').slice(0, 16).replace('T', ' ')}</td></tr>`).join('')}
+  </tbody></table></div></div>
+  <div class="card" style="margin-top:16px"><div class="card-b" style="font-size:13px;color:var(--text-2)">${ROLES.map(r => `<div style="margin:3px 0"><b style="color:var(--text)">${t('role_' + r)}</b> — ${t('roleDesc_' + r)}</div>`).join('')}</div></div>`;
+  setTimeout(() => {
+    const db = firebase.firestore();
+    $$('.uRole').forEach(s => s.onchange = async () => { try { await db.collection(CP + 'users').doc(s.dataset.id).update({ role: s.value, updatedAt: new Date().toISOString(), updatedBy: AUTH.email }); toast(t('savedT')); } catch (e) { toast(e.message, true); } });
+    $$('.uAct').forEach(c => c.onchange = async () => { try { await db.collection(CP + 'users').doc(c.dataset.id).update({ active: c.checked, updatedAt: new Date().toISOString(), updatedBy: AUTH.email }); toast(t('savedT')); } catch (e) { toast(e.message, true); } });
+  });
+  return h;
+}
+ACT.approveReq = async el => {
+  const id = el.dataset.id; const r = ADM.requests.find(x => x.id === id); const role = $('#rq_' + id.replace(/[^a-z0-9]/gi, '_')).value;
+  const db = firebase.firestore();
+  try { await db.collection(CP + 'users').doc(id).set({ id, email: id, name: r?.name || '', role, active: true, createdAt: new Date().toISOString(), createdBy: AUTH.email }); await db.collection(CP + 'accessRequests').doc(id).delete(); toast(t('savedT')); } catch (e) { toast(e.message, true); }
+};
+ACT.dismissReq = async el => { if (!confirm(t('confirmDel'))) return; await firebase.firestore().collection(CP + 'accessRequests').doc(el.dataset.id).delete(); };
+ACT.addUser = () => {
+  openModal({ title: t('addUser'), body: `<div class="form"><div class="f full"><label>${t('email')} (Microsoft 365)</label><input class="inp" id="nuE" placeholder="name@company.com"></div><div class="f"><label>${t('personName')}</label><input class="inp" id="nuN"></div><div class="f"><label>${t('role')}</label><select class="inp" id="nuR">${ROLES.slice().reverse().map(x => `<option value="${x}">${t('role_' + x)}</option>`).join('')}</select></div></div>`,
+    foot: `<span class="sp"></span><button class="btn" data-act="closeModal">${t('cancel')}</button><button class="btn pri" id="nuS">${t('save')}</button>` });
+  $('#nuS').onclick = async () => {
+    const id = $('#nuE').value.trim().toLowerCase(); if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(id)) return toast(t('email') + '?', true);
+    if (ADM.users.some(u => u.id === id)) return toast(t('userExists'), true);
+    await firebase.firestore().collection(CP + 'users').doc(id).set({ id, email: id, name: $('#nuN').value.trim(), role: $('#nuR').value, active: true, createdAt: new Date().toISOString(), createdBy: AUTH.email });
+    closeModal(); toast(t('savedT'));
+  };
+};
+
+const invAttachment = () => null;   // AR: invoice files are parsed only, not stored
+
+/* ---------- AI via company proxy (Google Apps Script) ---------- */
+async function aiProxyCall(payload) {
+  if (!CLOUD) throw new Error(t('aiLocalOnly'));
+  if (!CFG.aiProxyUrl) throw new Error(t('aiNoProxy'));
+  const idToken = await firebase.auth().currentUser.getIdToken();
+  const r = await fetch(CFG.aiProxyUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ idToken, ...payload }) });
+  const j = await r.json().catch(() => ({ ok: false, error: 'AI server HTTP ' + r.status }));
+  if (!j.ok) throw new Error(j.error || 'AI server error');
+  return j;
+}
+
+/* =====================================================================
+   Register (upload & parse) view, router, init
+   ===================================================================== */
+const REG = { items: [], sel: null, busy: false };
+function regItem(id) { return REG.items.find(x => x.id === id); }
+function vRegister() {
+  const it = regItem(REG.sel);
+  let h = pageHead(t('register'), '', `<button class="btn" data-act="clearDone">${t('clearDone')}</button><button class="btn ed" data-act="newInv">✎ ${t('manualEntry')}</button>`);
+  h += `<label class="drop" id="drop"><input type="file" id="regFiles" multiple accept=".pdf,image/*" style="display:none"><div style="font-size:26px">⤒</div><b>${t('dropHere')}</b><div style="font-size:12px;margin-top:4px">${t('dropSub')}</div></label>`;
+  if (!REG.items.length) return h;
+  const stTxt = x => x.status === 'parsing' ? `<span class="spin"></span> ${t(x.phase === 'ocr' ? 'ocr' : 'parsing')}` : x.status === 'ready' ? `<span class="b open">${t('ready')}</span>` : x.status === 'saved' ? `<span class="b paid">${t('saved')}</span>` : x.status === 'skipped' ? `<span class="b ic">${t('skipped')}</span>` : `<span class="b overdue">${t('failed')}</span>`;
+  h += `<div class="reg"><div class="card queue">${REG.items.map(x => `<div class="qi ${x.id === REG.sel ? 'on' : ''}" data-act="regSel" data-id="${x.id}"><div class="fn" title="${esc(x.file.name)}">${esc(x.file.name)}</div><div class="st">${stTxt(x)} ${x.fields.vendorId ? `<span class="muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(vName(x.fields.vendorId))}</span>` : ''}</div></div>`).join('')}</div>`;
+  if (it) {
+    const isImg = /^image\//.test(it.file.type);
+    const imgs = isImg ? [it.url] : (it.pageImgs || []);
+    h += `<div class="card preview"><div class="imgwrap"><div class="pv-bar"><button class="btn sm" data-act="regOpen">↗ ${LANG === 'ko' ? '새 창에서 열기' : 'Open in new tab'}</button></div>${imgs.length ? imgs.map(s => `<img src="${s}">`).join('') : `<div class="empty"><span class="spin"></span></div>`}${it.pageTotal > imgs.length && !isImg ? `<div class="muted">${t('morePages', { n: it.pageTotal - imgs.length })}</div>` : ''}</div></div>`;
+    if (!isImg && !it.pageImgs && !it.pvBusy) { it.pvBusy = true; renderPdfPages(it.file).then(r => { it.pageImgs = r.imgs; it.pageTotal = r.total; }).catch(() => { it.pageImgs = []; }).finally(() => { it.pvBusy = false; if (location.hash === '#register' && REG.sel === it.id) render(); }); }
+    h += `<div class="card regform"><div class="card-b">${regForm(it)}</div></div>`;
+  }
+  h += `</div>`;
+  return h;
+}
+function regForm(it) {
+  const f = it.fields, cf = f.conf || {};
+  if (it.status === 'parsing') return `<div class="empty"><span class="spin"></span> ${t('parsing')}</div>`;
+  const v = vendorById(f.vendorId);
+  const dueAuto = v && f.invoiceDate ? calcDue(f.invoiceDate, v.terms) : '';
+  const dups = f.vendorId ? findDuplicates(f, null) : [];
+  return `${it.error ? `<div class="errbox">${esc(it.error)}</div>` : ''}
+  ${it.status === 'saved' ? `<div class="okbox">✓ ${t('saved')}</div>` : ''}
+  ${dups.length ? `<div class="warnbox">⚠ ${t('dup', { x: dups.map(i => `${i.invoiceNo || '—'} (${i.invoiceDate}, ${money(i.amount)})`).join(', ') })}</div>` : ''}
+  ${!f.vendorId && f.vendorNameRaw ? `<div class="warnbox">${t('newVendorQ')} <b>${esc(f.vendorNameRaw)}</b> <button class="btn sm ed" data-act="regNewVendor">＋ ${t('addVendor')}</button></div>` : ''}
+  <div class="form">
+    <div class="f full"><label>${conf(cf.vendorId)} ${t('vendor')} *</label><div style="display:flex;gap:6px"><select class="inp rf" data-k="vendorId" style="flex:1">${vendorOptions(f.vendorId, true, true)}</select><button class="btn sm ed" data-act="regNewVendor" title="${t('addVendor')}">＋</button></div></div>
+    <div class="f"><label>${conf(cf.invoiceNo)} ${t('invNo')}</label><input class="inp rf" data-k="invoiceNo" value="${esc(f.invoiceNo || '')}"></div>
+    <div class="f"><label>${conf(cf.amount)} ${t('amount')} (USD) *</label><input class="inp rf" data-k="amount" type="number" step="0.01" value="${f.amount ?? ''}"></div>
+    <div class="f"><label>${conf(cf.invoiceDate)} ${t('invDate')} *</label><input class="inp rf" data-k="invoiceDate" type="date" value="${f.invoiceDate || ''}"></div>
+    <div class="f"><label>${conf(cf.dueDate)} ${t('dueDate')}</label><input class="inp rf" data-k="dueDate" type="date" value="${f.dueDate || ''}">${dueAuto ? `<span class="hint">${t('autoDue', { d: dueAuto })} (${termsLabel(v.terms)})</span>` : ''}</div>
+    <div class="f full"><label>${conf(cf.memo)} ${t('memo')}</label><input class="inp rf" data-k="memo" value="${esc(f.memo || '')}"></div>
+    <div class="f"><label>${conf(cf.product)} ${t('account')}</label><select class="inp rf" data-k="product">${productOptions(f.product)}</select></div>
+    <div class="f"><label>${conf(cf.poNo)} ${t('poNo')}</label><input class="inp rf" data-k="poNo" value="${esc(f.poNo || '')}"></div>
+    <div class="f"><label>${t('note')}</label><input class="inp rf" data-k="note" value="${esc(f.note || '')}"></div>
+  </div>
+  ${f.currency && f.currency !== 'USD' ? `<div class="warnbox" style="margin-top:10px">${t('currency')}: ${esc(f.currency)}</div>` : ''}
+  <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
+    <button class="btn ed" data-act="regAI" ${it.aiBusy ? 'disabled' : ''}>${it.aiBusy ? '<span class="spin"></span>' : '✦'} ${t('aiRead')}</button>
+    <span style="flex:1"></span>
+    ${it.status !== 'saved' ? `<button class="btn ed" data-act="regSkip">${t('skip')}</button><button class="btn pri ed" data-act="regSave">${t('saveNext')}</button>` : ''}
+  </div>
+  <div class="muted" style="font-size:11px;margin-top:10px">${t('parsedBy')}: ${it.method === 'ai' ? t('ai') : it.method === 'ocr' ? t('ocrRules') : t('rules')} · ${conf('hi')} ${t('conf_hi')} ${conf('mid')} ${t('conf_mid')} ${conf('lo')} ${t('conf_lo')}</div>
+  <details class="raw" style="margin-top:10px"><summary>${t('rawText')}</summary><pre>${esc(it.text || '')}</pre></details>`;
+}
+function bindRegister() {
+  const drop = $('#drop'); if (!drop) return;
+  const inp = $('#regFiles');
+  inp.onchange = () => { addRegFiles([...inp.files]); inp.value = ''; };
+  drop.ondragover = e => { e.preventDefault(); drop.classList.add('on'); };
+  drop.ondragleave = () => drop.classList.remove('on');
+  drop.ondrop = e => { e.preventDefault(); drop.classList.remove('on'); addRegFiles([...e.dataTransfer.files]); };
+  $$('.rf').forEach(el => el.addEventListener('change', () => {
+    const it = regItem(REG.sel); if (!it) return; const k = el.dataset.k;
+    it.fields[k] = k === 'amount' ? (el.value === '' ? '' : r2(el.value)) : el.value;
+    if (it.fields.conf) it.fields.conf[k] = 'hi';
+    if (['vendorId', 'invoiceNo', 'amount', 'invoiceDate'].includes(k)) render();
+  }));
+}
+function addRegFiles(files) {
+  files = files.filter(f => /pdf|image/.test(f.type) || /\.(pdf|png|jpe?g|webp)$/i.test(f.name));
+  for (const file of files) REG.items.push({ id: uid(), file, url: URL.createObjectURL(file), status: 'parsing', fields: { conf: {} }, text: '' });
+  if (!REG.sel && REG.items.length) REG.sel = REG.items[0].id;
+  render(); processQueue();
+}
+async function processQueue() {
+  if (REG.busy) return; REG.busy = true;
+  try {
+    for (const it of REG.items) {
+      if (it.status !== 'parsing') continue;
+      try {
+        const ex = await extractText(it.file, ph => { it.phase = ph; if (location.hash === '#register') render(); });
+        it.text = ex.text; it.method = ex.method;
+        it.fields = parseInvoiceText(ex.text, it.file.name);
+        it.status = 'ready';
+      } catch (e) { console.error(e); it.status = 'ready'; it.error = (LANG === 'ko' ? '텍스트 추출 실패: ' : 'Text extraction failed: ') + e.message; it.fields = parseInvoiceText('', it.file.name); }
+      if (location.hash === '#register') render();
+    }
+  } finally { REG.busy = false; }
+}
+ACT.regOpen = () => { const it = regItem(REG.sel); if (it) window.open(it.url, '_blank'); };
+ACT.regSel = el => { REG.sel = el.dataset.id; render(); };
+ACT.clearDone = () => { REG.items = REG.items.filter(x => { const keep = x.status !== 'saved' && x.status !== 'skipped'; if (!keep) URL.revokeObjectURL(x.url); return keep; }); if (!regItem(REG.sel)) REG.sel = REG.items[0]?.id || null; render(); };
+const nextReg = () => { const n = REG.items.find(x => x.status === 'ready' || x.status === 'parsing'); REG.sel = n ? n.id : REG.sel; };
+ACT.regSkip = () => { const it = regItem(REG.sel); if (it) it.status = 'skipped'; nextReg(); render(); };
+ACT.regAI = async () => {
+  const it = regItem(REG.sel); if (!it) return;
+  it.aiBusy = true; render();
+  try {
+    const r = await aiParse(it.file);
+    const keepNote = it.fields.note;
+    it.fields = { ...it.fields, ...Object.fromEntries(Object.entries(r).filter(([k, v]) => v !== undefined && v !== null && v !== '')), conf: { ...it.fields.conf, ...r.conf } };
+    if (!r.vendorId) it.fields.vendorId = it.fields.vendorId || '';
+    it.fields.note = keepNote;
+    it.method = 'ai'; it.error = ''; toast(t('aiDone'));
+  } catch (e) { it.error = 'AI: ' + e.message; }
+  it.aiBusy = false; render();
+};
+ACT.regNewVendor = (el, e) => {
+  const it = regItem(REG.sel);
+  ACT.newVendor(el, e, { name: it?.fields.vendorNameRaw || '', onSaved: doc => { if (it) { it.fields.vendorId = doc.id; } render(); } });
+};
+ACT.regSave = async el => {
+  const it = regItem(REG.sel); if (!it) return; const f = it.fields;
+  if (!f.vendorId || !f.invoiceDate || f.amount === '' || f.amount == null) return toast(t('required'), true);
+  const dups = findDuplicates(f, null);
+  if (dups.length && !confirm(t('dup', { x: dups.map(i => i.invoiceNo).join(', ') }) + '\n\n' + (LANG === 'ko' ? '그래도 저장할까요?' : 'Save anyway?'))) return;
+  const v = vendorById(f.vendorId);
+  el.disabled = true;
+  try {
+    const doc = { vendorId: f.vendorId, invoiceNo: (f.invoiceNo || '').trim(), invoiceDate: f.invoiceDate, dueDate: f.dueDate || '', amount: r2(f.amount), memo: (f.memo || '').trim(), note: (f.note || '').trim(), product: f.product || '', poNo: (f.poNo || '').trim(), fileName: it.file.name, source: 'upload', parsedBy: it.method, needsReview: false, reviewFlags: [], seq: Date.now() };
+    var saved = await Store.put('invoices', doc);
+  } catch (e) { el.disabled = false; it.error = e.message; render(); return; }
+  it.status = 'saved'; it.savedId = saved.id; it.error = '';
+  toast(t('savedT')); nextReg(); render();
+};
+
+/* ---------- router / nav ---------- */
+const NAV = [
+  ['dashboard', '◧'], ['summary', '▤'], ['invoices', '≡'], ['register', '⤒', 'edit'], ['payments', '💳'], ['vendors', '◎'], ['users', '👥', 'admin', true], ['settings', '⚙'],
+];
+function renderNav() {
+  const cur = (location.hash.slice(1) || 'dashboard').split('/')[0];
+  const rv = S.invoices.filter(i => i.needsReview).length;
+  $('#navlinks').innerHTML = NAV.filter(([k, ic, need, cloudOnly]) => (!need || can(need)) && (!cloudOnly || CLOUD)).map(([k, ic]) => `<a href="#${k}" class="${cur === k || (cur === 'vendor' && k === 'vendors') ? 'on' : ''}"><span class="ico">${ic}</span><span class="t">${t(k)}</span>${k === 'invoices' && rv ? `<span class="cnt" title="${t('needReview')}">${rv}</span>` : ''}${k === 'users' && typeof ADM !== 'undefined' && ADM.requests.length ? `<span class="cnt">${ADM.requests.length}</span>` : ''}${k === 'register' && REG.items.filter(x => x.status === 'ready').length ? `<span class="cnt" style="background:var(--accent-l);color:var(--accent-d)">${REG.items.filter(x => x.status === 'ready').length}</span>` : ''}</a>`).join('');
+  $$('.lang-toggle button').forEach(b => b.classList.toggle('on', b.dataset.lang === LANG));
+  if (CLOUD) {
+    $('#who').innerHTML = AUTH.email ? `<div style="font-weight:600;color:var(--text)">👤 ${esc(AUTH.name)}</div><div style="margin:2px 0 6px"><span class="b ${AUTH.role === 'admin' ? 'overdue' : AUTH.role === 'editor' ? 'open' : 'ic'}">${t('role_' + AUTH.role)}</span></div><button class="btn sm" id="btnOut">${t('signOut')}</button>` : '';
+    const bo = $('#btnOut'); if (bo) bo.onclick = e => { e.stopPropagation(); signOut(); };
+  } else { const u = Pref.get('user', ''); $('#who').textContent = u ? '👤 ' + u : (LANG === 'ko' ? '👤 이름 설정' : '👤 Set your name'); }
+  $('#storeMode').textContent = CLOUD ? t('online') : t('local');
+}
+function render(keepFocus) {
+  const focusId = keepFocus && document.activeElement ? document.activeElement.id : null; const caret = focusId ? document.activeElement.selectionStart : null;
+  Object.values(CH).forEach(ch => ch && ch.destroy && ch.destroy()); CH = {};
+  const [view, arg] = (location.hash.slice(1) || 'dashboard').split('/');
+  renderNav();
+  if (CLOUD && AUTH.status !== 'ok') return;
+  document.body.classList.toggle('ro', !can('edit')); document.body.classList.toggle('isadm', can('admin'));
+  const noPerm = () => `<div class="errbox">${t('noPerm')}</div>`;
+  const fn = { dashboard: vDashboard, summary: vSummary, invoices: vInvoices, register: can('edit') ? vRegister : noPerm, payments: vPayments, vendors: vVendors, vendor: () => vVendor(arg), settings: vSettings, users: CLOUD ? vUsers : vDashboard }[view] || vDashboard;
+  $('#view').innerHTML = fn();
+  bindAsOf(); bindRegister();
+  if (focusId && $('#' + focusId)) { const el = $('#' + focusId); el.focus(); try { el.setSelectionRange(caret, caret); } catch { } }
+}
+function setLang(l) { LANG = l; Pref.set('lang', l); document.documentElement.lang = l; render(); }
+const EDIT_ACTS = new Set(['newInv', 'payFor', 'payInv', 'newPay', 'newVendor', 'delInv', 'delPay', 'delVendor', 'regNewVendor', 'regSave', 'regAI', 'addUser', 'approveReq', 'dismissReq']);
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-act]'); if (!el || !ACT[el.dataset.act]) return;
+  e.preventDefault();
+  const a = el.dataset.act;
+  if (EDIT_ACTS.has(a) && !can(['addUser', 'approveReq', 'dismissReq'].includes(a) ? 'admin' : 'edit')) return toast(t('noPerm'), true);
+  ACT[a](el, e);
+});
+window.addEventListener('unhandledrejection', e => { const m = (e.reason && (e.reason.message || e.reason.code)) || String(e.reason); if (/permission/i.test(m)) toast(t('noPerm'), true); else toast(m, true); });
+$$('.lang-toggle button').forEach(b => b.onclick = () => setLang(b.dataset.lang));
+$('#who').onclick = () => { if (CLOUD) return; const n = prompt(t('yourName'), Pref.get('user', '')); if (n !== null) { Pref.set('user', n.trim()); renderNav(); } };
+window.addEventListener('hashchange', () => { closeModal(); if (!location.hash.startsWith('#vendor/')) UI.vendorTab = 'ledger'; window.scrollTo(0, 0); render(); });
+
+(async function init() {
+  document.documentElement.lang = LANG;
+  if (CLOUD) return cloudBoot();
+  try { await Store.init(); }
+  catch (e) { $('#view').innerHTML = `<div class="errbox">${t('storageErr')}: ${esc(e.message)}</div>`; return; }
+  render();
+  if (Pref.get('lang', null) === null) langPicker();
+})();
+function langPicker() {
+  openModal({ title: '언어 선택 · Language', body: `<div style="text-align:center;padding:6px 0 4px"><div style="font-size:15px;font-weight:600">사용할 언어를 선택하세요<br>Choose your language</div>
+    <div style="display:flex;gap:12px;justify-content:center;margin:20px 0 14px"><button class="btn langpick" data-lang="ko" style="padding:16px 28px;font-size:15px">🇰🇷 한국어</button><button class="btn langpick" data-lang="en" style="padding:16px 28px;font-size:15px">🇺🇸 English</button></div>
+    <div class="muted" style="font-size:12px">왼쪽 위 토글이나 설정에서 언제든 바꿀 수 있습니다.<br>You can change it anytime from the toggle at the top left or in Settings.</div></div>` });
+  $$('.langpick').forEach(b => b.onclick = () => { closeModal(); setLang(b.dataset.lang); });
+}
+
+</script>
+</body>
+</html>
