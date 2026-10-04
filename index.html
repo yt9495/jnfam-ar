@@ -1156,15 +1156,15 @@ ACT.exportPeriod = () => {
 };
 /* =================== SALES (판매액, invoice-date basis) =================== */
 Object.assign(L, {
-  sales: ['Sales', '매출(Sales)'], salesAmt: ['Sales amount', '판매액'], salesAmtFull: ['Sales amount (before deposit deduction)', '판매액 (선수금 공제 전)'],
-  salesHint: ['Leave blank = same as invoice amount. For 50% deposit-deduct invoices enter the full amount.', '비우면 청구액과 같음. 50% 선수금 공제 인보이스는 공제 전 전체 금액 입력.'],
+  sales: ['Sales', '매출(Sales)'], salesAmt: ['Sales (invoice total)', '매출 (인보이스 합계)'], salesAmtFull: ['Sales = invoice total (before 50% advance)', '매출 = 인보이스 합계 (50% 선불 차감 전)'], arAmt: ['AR billed (to collect)', '청구액 (AR · 실제 받을 돈)'],
+  salesHint: ['Blank = same as AR amount (100% billing).', '비우면 청구액과 같음 (100% 청구).'],
   salesBasis: ['Invoice-date basis, independent of receipts. Sales amount = before deposit deduction. Other receivables (duty refund) excluded.', '인보이스 일자 기준 · 입금과 무관 · 판매액은 선수금 공제 전 금액 · 기타 미수금(관세 환급) 제외'],
   byCustomer: ['By customer', '고객별'], byProduct: ['By material', '품목별'], byCustProd: ['Customer × material', '고객 × 품목'],
   salesTotal: ['Sales in period', '기간 판매액'], invoicedTotal: ['Invoiced in period', '기간 청구액'], monthlyAvg: ['Monthly average', '월평균'], depositDiff: ['Deposit-deducted portion', '선수금 공제분'],
   allCustomers: ['All customers', '전체 고객'], allProducts: ['All materials', '전체 품목'], exportSales: ['Export sales', '매출 엑셀'],
-  dep50: ['50% deposit setting', '50% 공제 일괄 지정'], dep50Desc: ['Sets sales amount = invoice amount × 2 for the invoices below (50% deposit deducted on the invoice). AR balances are not affected.', '체크한 인보이스의 판매액을 청구액 × 2로 지정합니다 (인보이스에서 50% 선수금 공제). 기본으로 HF·HCl·HNO3만 체크됩니다. AR 잔액에는 영향 없음.'],
-  dep50Apply: ['Amount is half → sales × 2', '청구액이 절반 → 판매액 × 2'], dep50Full: ['Amount is full → AR ÷ 2', '입력값이 전체 → 청구액 ÷ 2'], dep50Over: ['{x}: already received more than half — skipped', '{x}: 이미 절반보다 많이 입금돼 건너뜀'],
-  depNone: ['No deduction', '공제 없음'], depHalf: ['Deducted (×2)', '공제 (×2)'], depFull: ['Deducted (÷2)', '공제 (÷2)'], dep50Clear: ['Reset to invoice amount', '청구액으로 되돌리기'], dep50Sel: ['{n} selected · invoice {a} → sales {b}', '{n}건 선택 · 청구 {a} → 판매 {b}'],
+  dep50: ['50% deposit setting', '50% 공제 일괄 지정'], dep50Desc: ['50% advance invoices: Sales = invoice total, AR = total − 50% advance. Choose the button that matches what was entered as the amount.', '50% 선불 인보이스: 매출 = 인보이스 합계, 청구액(AR) = 합계 − 50% Advance payment. 입력된 금액이 무엇인지에 맞는 버튼을 고르세요.'],
+  dep50Apply: ['Entered = AR (half) → sales = × 2', '입력값 = 청구액(절반) → 매출 = ×2'], dep50Full: ['Entered = invoice total → AR = ÷ 2', '입력값 = 인보이스 합계 → 청구액 = ÷2'], dep50Over: ['{x}: already received more than half — skipped', '{x}: 이미 절반보다 많이 입금돼 건너뜀'],
+  depNone: ['100% billing', '100% 청구'], depHalf: ['50% advance', '50% 선불'], depFull: ['50% advance', '50% 선불'], dep50Clear: ['Reset to invoice amount', '청구액으로 되돌리기'], dep50Sel: ['{n} selected · invoice {a} → sales {b}', '{n}건 선택 · 청구 {a} → 판매 {b}'],
   rv_deposit50: ['Excel amount was "/2" — sales amount set to full (× 2)', '엑셀 금액이 "/2" 수식 — 판매액을 전체 금액(×2)으로 지정'],
 });
 /* 50% deposit state: 'half' = AR amount is the deducted half (sales = ×2); 'full' = entered full, AR halved; 'none' */
@@ -1285,7 +1285,7 @@ ACT.dep50 = () => {
   const draw = () => {
     const vid = $('#dV').value, f = $('#dF').value, to = $('#dT').value;
     list = S.invoices.filter(i => i.vendorId === vid && i.invoiceDate >= f && i.invoiceDate <= to).sort((a, b) => a.invoiceDate.localeCompare(b.invoiceDate));
-    $('#dBox').innerHTML = `<table class="t"><thead><tr><th><input type="checkbox" id="dAll"></th><th>${t('invDate')}</th><th>${t('invNo')}</th><th>${t('memo')}</th><th class="num">${t('amount')} (AR)</th><th class="num">${t('salesAmt')}</th><th>${t('status')}</th></tr></thead><tbody>${list.map((i, k) => { const ds = depState(i); return `<tr><td><input type="checkbox" class="dChk" data-k="${k}" ${ds === 'none' && ['HF', 'HCl', 'HNO3'].includes(i.product || productOf(i.memo)) ? 'checked' : ''}></td><td>${i.invoiceDate}</td><td>${esc(i.invoiceNo)}</td><td class="wrap muted">${esc(i.memo)}</td><td class="num">${money(i.amount)}</td><td class="num">${ds !== 'none' ? `<b>${money(salesOf(i))}</b>` : '<span class="muted">=</span>'}</td><td>${ds === 'none' ? `<span class="muted">${t('depNone')}</span>` : `<span class="b partial">${t(ds === 'full' ? 'depFull' : 'depHalf')}</span>`}</td></tr>`; }).join('') || `<tr><td colspan="6" class="empty">${t('noData')}</td></tr>`}</tbody></table>`;
+    $('#dBox').innerHTML = `<table class="t"><thead><tr><th><input type="checkbox" id="dAll"></th><th>${t('invDate')}</th><th>${t('invNo')}</th><th>${t('memo')}</th><th class="num">${t('arAmt')}</th><th class="num">${t('salesAmt')}</th><th>${t('status')}</th></tr></thead><tbody>${list.map((i, k) => { const ds = depState(i); return `<tr><td><input type="checkbox" class="dChk" data-k="${k}" ${ds === 'none' && ['HF', 'HCl', 'HNO3'].includes(i.product || productOf(i.memo)) ? 'checked' : ''}></td><td>${i.invoiceDate}</td><td>${esc(i.invoiceNo)}</td><td class="wrap muted">${esc(i.memo)}</td><td class="num">${money(i.amount)}</td><td class="num">${ds !== 'none' ? `<b>${money(salesOf(i))}</b>` : '<span class="muted">=</span>'}</td><td>${ds === 'none' ? `<span class="muted">${t('depNone')}</span>` : `<span class="b partial">${t(ds === 'full' ? 'depFull' : 'depHalf')}</span>`}</td></tr>`; }).join('') || `<tr><td colspan="6" class="empty">${t('noData')}</td></tr>`}</tbody></table>`;
     const sum = () => { const sel = list.filter((_, k) => $(`.dChk[data-k="${k}"]`)?.checked); const a = sel.reduce((s, i) => s + (+i.amount || 0), 0); $('#dSum').textContent = t('dep50Sel', { n: sel.length, a: money(a), b: money(a * 2) }); return sel; };
     $$('.dChk').forEach(c => c.onchange = sum); $('#dAll').onchange = e => { $$('.dChk').forEach(c => c.checked = e.target.checked); sum(); }; sum();
     return sum;
