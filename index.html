@@ -880,6 +880,13 @@ function parseInvoiceText(text, fileName = '') {
       const usd = []; for (const l of lines) for (const m of l.matchAll(/(?:USD|US\$|usp|\$)\s*([\d,]+\.\d{2})\b/gi)) usd.push(+m[1].replace(/,/g, ''));
       const tot = usd.length ? Math.max(...usd) : sumItems;
       if (tot) { res.amount = r2(tot); res.conf.amount = Math.abs(tot - sumItems) < 0.01 || usd.filter(v => v === tot).length > 1 ? 'hi' : 'mid'; }
+      // "50% Advance payment  -USD 16,227.24" → AR amount = gross − advance, sales = gross
+      const adv = lines.find(l => /advance\s*payment|deposit|선수|선급/i.test(l) && /[\d,]+\.\d{2}/.test(l));
+      if (adv) {
+        const dm = adv.match(/([\d,]+\.\d{2})(?!.*[\d,]+\.\d{2})/); const ded = dm ? +dm[1].replace(/,/g, '') : 0;
+        const gross = sumItems || tot;
+        if (ded > 0 && ded < gross) { res.amount = r2(gross - ded); res.salesAmount = r2(gross); res.dep50 = 'full'; res.conf.amount = usd.some(v => Math.abs(v - res.amount) < 0.01) ? 'hi' : 'mid'; res.conf.salesAmount = 'hi'; }
+      }
     }
     // consignee line = customer
     const ci = lines.findIndex(l => /consignee/i.test(l));
@@ -1156,9 +1163,21 @@ Object.assign(L, {
   salesTotal: ['Sales in period', '기간 판매액'], invoicedTotal: ['Invoiced in period', '기간 청구액'], monthlyAvg: ['Monthly average', '월평균'], depositDiff: ['Deposit-deducted portion', '선수금 공제분'],
   allCustomers: ['All customers', '전체 고객'], allProducts: ['All materials', '전체 품목'], exportSales: ['Export sales', '매출 엑셀'],
   dep50: ['50% deposit setting', '50% 공제 일괄 지정'], dep50Desc: ['Sets sales amount = invoice amount × 2 for the invoices below (50% deposit deducted on the invoice). AR balances are not affected.', '체크한 인보이스의 판매액을 청구액 × 2로 지정합니다 (인보이스에서 50% 선수금 공제). 기본으로 HF·HCl·HNO3만 체크됩니다. AR 잔액에는 영향 없음.'],
-  dep50Apply: ['Apply × 2', '× 2 적용'], dep50Clear: ['Reset to invoice amount', '청구액으로 되돌리기'], dep50Sel: ['{n} selected · invoice {a} → sales {b}', '{n}건 선택 · 청구 {a} → 판매 {b}'],
+  dep50Apply: ['Amount is half → sales × 2', '청구액이 절반 → 판매액 × 2'], dep50Full: ['Amount is full → AR ÷ 2', '입력값이 전체 → 청구액 ÷ 2'], dep50Over: ['{x}: already received more than half — skipped', '{x}: 이미 절반보다 많이 입금돼 건너뜀'],
+  depNone: ['No deduction', '공제 없음'], depHalf: ['Deducted (×2)', '공제 (×2)'], depFull: ['Deducted (÷2)', '공제 (÷2)'], dep50Clear: ['Reset to invoice amount', '청구액으로 되돌리기'], dep50Sel: ['{n} selected · invoice {a} → sales {b}', '{n}건 선택 · 청구 {a} → 판매 {b}'],
   rv_deposit50: ['Excel amount was "/2" — sales amount set to full (× 2)', '엑셀 금액이 "/2" 수식 — 판매액을 전체 금액(×2)으로 지정'],
 });
+/* 50% deposit state: 'half' = AR amount is the deducted half (sales = ×2); 'full' = entered full, AR halved; 'none' */
+const depState = i => i.dep50 === 'full' ? 'full' : (i.dep50 === 'half' || (i.salesAmount != null && i.salesAmount !== '' && Math.abs(+i.salesAmount - 2 * (+i.amount || 0)) < 0.02)) ? 'half' : 'none';
+/* PO billing rules per customer: [{po:'7600006456', pct:50}] — pct = share of the invoice total billed to AR */
+const poRule = (vid, po) => { const v = vendorById(vid); const k = normKey(po); return k ? (v?.poRules || []).find(r => normKey(r.po) === k) : null; };
+const poRulesText = v => (v.poRules || []).map(r => `${r.po}=${r.pct}`).join(', ');
+const parsePoRules = s => s.split(/[,;\n]+/).map(x => x.trim()).filter(Boolean).map(x => { const m = x.match(/^(.+?)\s*[=:]\s*(\d{1,3})\s*%?$/); return m ? { po: m[1].trim(), pct: Math.min(100, +m[2]) } : null; }).filter(Boolean);
+function applyPoRule(f) {   // parsed fields: AR amount follows the PO rule, sales = invoice total
+  const r = poRule(f.vendorId, f.poNo); if (!r || f.amount === '' || f.amount == null) return;
+  if (r.pct < 100) { if (f.salesAmount == null || f.salesAmount === '') { f.salesAmount = r2(f.amount); f.amount = r2(f.amount * r.pct / 100); f.dep50 = 'full'; } f.ruleNote = `PO ${r.po}: ${r.pct}%`; }
+  else { f.ruleNote = `PO ${r.po}: 100%`; if (f.salesAmount && f.dep50 !== 'full') { f.salesAmount = null; f.dep50 = null; } }
+}
 const salesOf = i => (i.salesAmount != null && i.salesAmount !== '' ? +i.salesAmount : +i.amount || 0);
 function salesLines(i) {   // product split of the sales amount (lines scaled to sales/invoice ratio)
   const amt = +i.amount || 0, s = salesOf(i), k = amt ? s / amt : 1;
@@ -1261,19 +1280,30 @@ ACT.dep50 = () => {
     <div class="filters"><select class="inp" id="dV">${S.vendors.filter(v => !isIC(v)).map(v => `<option value="${v.id}" ${st.vendor === v.id ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select>
     <label class="chk">${t('from')} <input type="date" class="inp" id="dF" value="${st.from}"></label><label class="chk">${t('to')} <input type="date" class="inp" id="dT" value="${st.to}"></label></div>
     <div class="tbl-wrap" style="max-height:360px" id="dBox"></div><div class="pill-sum" id="dSum"></div>`;
-  openModal({ title: t('dep50'), body, wide: true, foot: `<button class="btn ed" id="dClr">${t('dep50Clear')}</button><span class="sp"></span><button class="btn" data-act="closeModal">${t('cancel')}</button><button class="btn pri ed" id="dApply">${t('dep50Apply')}</button>` });
+  openModal({ title: t('dep50'), body, wide: true, foot: `<button class="btn ed" id="dClr">${t('dep50Clear')}</button><span class="sp"></span><button class="btn" data-act="closeModal">${t('cancel')}</button><button class="btn ed" id="dFull">${t('dep50Full')}</button><button class="btn pri ed" id="dApply">${t('dep50Apply')}</button>` });
   let list = [];
   const draw = () => {
     const vid = $('#dV').value, f = $('#dF').value, to = $('#dT').value;
     list = S.invoices.filter(i => i.vendorId === vid && i.invoiceDate >= f && i.invoiceDate <= to).sort((a, b) => a.invoiceDate.localeCompare(b.invoiceDate));
-    $('#dBox').innerHTML = `<table class="t"><thead><tr><th><input type="checkbox" id="dAll"></th><th>${t('invDate')}</th><th>${t('invNo')}</th><th>${t('memo')}</th><th class="num">${t('amount')}</th><th class="num">${t('salesAmt')}</th></tr></thead><tbody>${list.map((i, k) => `<tr><td><input type="checkbox" class="dChk" data-k="${k}" ${['HF', 'HCl', 'HNO3'].includes(i.product || productOf(i.memo)) ? 'checked' : ''}></td><td>${i.invoiceDate}</td><td>${esc(i.invoiceNo)}</td><td class="wrap muted">${esc(i.memo)}</td><td class="num">${money(i.amount)}</td><td class="num">${i.salesAmount != null && i.salesAmount !== '' ? `<b>${money(i.salesAmount)}</b>` : '<span class="muted">=</span>'}</td></tr>`).join('') || `<tr><td colspan="6" class="empty">${t('noData')}</td></tr>`}</tbody></table>`;
+    $('#dBox').innerHTML = `<table class="t"><thead><tr><th><input type="checkbox" id="dAll"></th><th>${t('invDate')}</th><th>${t('invNo')}</th><th>${t('memo')}</th><th class="num">${t('amount')} (AR)</th><th class="num">${t('salesAmt')}</th><th>${t('status')}</th></tr></thead><tbody>${list.map((i, k) => { const ds = depState(i); return `<tr><td><input type="checkbox" class="dChk" data-k="${k}" ${ds === 'none' && ['HF', 'HCl', 'HNO3'].includes(i.product || productOf(i.memo)) ? 'checked' : ''}></td><td>${i.invoiceDate}</td><td>${esc(i.invoiceNo)}</td><td class="wrap muted">${esc(i.memo)}</td><td class="num">${money(i.amount)}</td><td class="num">${ds !== 'none' ? `<b>${money(salesOf(i))}</b>` : '<span class="muted">=</span>'}</td><td>${ds === 'none' ? `<span class="muted">${t('depNone')}</span>` : `<span class="b partial">${t(ds === 'full' ? 'depFull' : 'depHalf')}</span>`}</td></tr>`; }).join('') || `<tr><td colspan="6" class="empty">${t('noData')}</td></tr>`}</tbody></table>`;
     const sum = () => { const sel = list.filter((_, k) => $(`.dChk[data-k="${k}"]`)?.checked); const a = sel.reduce((s, i) => s + (+i.amount || 0), 0); $('#dSum').textContent = t('dep50Sel', { n: sel.length, a: money(a), b: money(a * 2) }); return sel; };
     $$('.dChk').forEach(c => c.onchange = sum); $('#dAll').onchange = e => { $$('.dChk').forEach(c => c.checked = e.target.checked); sum(); }; sum();
     return sum;
   };
   let sel = draw(); ['dV', 'dF', 'dT'].forEach(id => $('#' + id).onchange = () => { sel = draw(); });
-  const commit = async x2 => { const items = sel(); if (!items.length) return; await Store.putMany('invoices', items.map(i => Store.stamp({ ...i, salesAmount: x2 ? r2(i.amount * 2) : null }))); closeModal(); toast(t('savedT')); render(); };
-  $('#dApply').onclick = () => commit(true); $('#dClr').onclick = () => commit(false);
+  const commit = async mode => {
+    const items = sel(); if (!items.length) return;
+    const c = compute({ asOf: '2999-12-31' }); const out = [], skipped = [];
+    for (const i of items) {
+      const base = depState(i) === 'full' ? +i.salesAmount : +i.amount;           // undo a previous ÷2 first
+      if (mode === 'half') out.push({ ...i, amount: base, salesAmount: r2(base * 2), dep50: 'half' });
+      else if (mode === 'full') { const half = r2(base / 2); const applied = c.inv.get(i.id)?.applied || 0; if (applied > half + 0.004) { skipped.push(i.invoiceNo); continue; } out.push({ ...i, amount: half, salesAmount: r2(base), dep50: 'full' }); }
+      else out.push({ ...i, amount: base, salesAmount: null, dep50: null });
+    }
+    if (mode === 'full' && !confirm((LANG === 'ko' ? `${out.length}건의 AR 청구액을 절반으로 바꿉니다. 계속할까요?` : `Halve the AR amount of ${out.length} invoices?`))) return;
+    await Store.putMany('invoices', out.map(i => Store.stamp(i))); closeModal(); toast(t('savedT') + (skipped.length ? ' · ' + t('dep50Over', { x: skipped.join(', ') }) : ''), !!skipped.length); render();
+  };
+  $('#dApply').onclick = () => commit('half'); $('#dFull').onclick = () => commit('full'); $('#dClr').onclick = () => commit('clear');
 };
 /* =====================================================================
    Invoice issuing — JNFAM Commercial Invoice PDF (jsPDF, Times) + AR registration
@@ -1283,7 +1313,7 @@ Object.assign(L, {
   shipTo: ['Consignee', '수하인 (Consignee)'], billName: ['Name on invoice', '인보이스 표기명'], billAddr: ['Address on invoice', '인보이스 주소'], discharge: ['Discharge site', '도착지 (Discharge site)'],
   loadSite: ['Loading site', '선적지 (Loading site)'], carrier: ['Carrier', '운송사 (Carrier)'], notify: ['Notify party', '통지처 (Notify party)'], remarks: ['Remarks (extra)', '비고 (추가)'],
   items: ['Line items', '품목'], prodName: ['Product name', '제품명'], descr: ['Description', '품명 설명'], descr2: ['Description line 2', '설명 2줄 (탱크 번호 등)'], qty: ['Quantity', '수량'], unit: ['Unit', '단위'], pack: ['Package', '포장'],
-  unitPrice: ['Unit price', '단가'], lineNote: ['Shipping note', '선적 메모 (Shuttle/BOL)'], addLine: ['Add line', '품목 추가'], deposit50: ['Deduct 50% deposit', '50% 선수금 공제'],
+  unitPrice: ['Unit price', '단가'], lineNote: ['Shipping note', '선적 메모 (Shuttle/BOL)'], addLine: ['Add line', '품목 추가'], deposit50: ['50% advance payment deducted', '50% 선불(Advance payment) 공제'],
   deposit50Hint: ['Invoice amount = 50% of the total; sales amount keeps the full total.', '청구액 = 합계의 50%, 판매액은 전체 합계로 기록'],
   preview: ['Preview PDF', 'PDF 미리보기'], issueSave: ['Save PDF & register', 'PDF 저장 + AR 등록'], reprint: ['Re-create PDF', 'PDF 다시 만들기'], issued: ['Issued', '발행됨'],
   tplSec: ['Invoice template (issuing)', '인보이스 양식 (발행용)'], shipper: ['Shipper (our company)', '발송인 (자사)'], shipperAddr: ['Address', '주소'], telLine: ['Tel / E-mail line', '전화·이메일 줄'],
@@ -1361,8 +1391,9 @@ async function buildInvoicePdf(d) {
     y += (l.desc2 || l.note) ? 30 : 18;
   }
   if (d.deposit50) {
-    txt('Less 50% Deposit', (COL[1] + COL[2]) / 2, y, { align: 'center' });
-    txt(`(USD ${fmtUSD(total - invoiceAmt)})`, COL[5] - 8, y, { align: 'right' }); y += 18;
+    const ya = Math.max(y + 20, 495);
+    txt('50% Advance payment', COL[2] + 26, ya); doc.setTextColor(220, 38, 38);
+    txt(`-USD ${fmtUSD(total - invoiceAmt)}`, COL[5] - 8, ya, { align: 'right' }); doc.setTextColor(0, 0, 0); y = ya + 18;
   }
   // totals
   hl(530);
@@ -1423,10 +1454,10 @@ function vIssue() {
       <td>${d.lines.length > 1 ? `<button class="btn sm ghost" data-act="issDelLine" data-k="${k}">✕</button>` : ''}</td></tr>`).join('')}
   </tbody></table></div></div></div>`;
   setTimeout(() => {
-    $$('.is').forEach(el => el.onchange = () => { ISS.d[el.dataset.k] = el.value; if (el.dataset.k === 'invoiceDate') render(); });
+    $$('.is').forEach(el => el.onchange = () => { ISS.d[el.dataset.k] = el.value; if (el.dataset.k === 'poNo') { const r = poRule(ISS.d.vendorId, el.value); if (r) ISS.d.deposit50 = r.pct < 100; render(); } if (el.dataset.k === 'invoiceDate') render(); });
     $$('.il').forEach(el => el.onchange = () => { const l = ISS.d.lines[el.dataset.k]; l[el.dataset.f] = el.value; if (['name', 'desc'].includes(el.dataset.f) && !l.price) prefillLine(l); render(); });
     $('#isDep').onchange = e => { ISS.d.deposit50 = e.target.checked; render(); };
-    $('#isV').onchange = e => { const v = vendorById(e.target.value); Object.assign(ISS.d, { vendorId: e.target.value, consName: v?.billName || v?.name || '', consAddr: v?.billAddr || '', discharge: v?.discharge || '', poNo: v?.lastPo || ISS.d.poNo }); render(); };
+    $('#isV').onchange = e => { const v = vendorById(e.target.value); Object.assign(ISS.d, { vendorId: e.target.value, consName: v?.billName || v?.name || '', consAddr: v?.billAddr || '', discharge: v?.discharge || '', poNo: v?.lastPo || ISS.d.poNo }); const r = poRule(ISS.d.vendorId, ISS.d.poNo); if (r) ISS.d.deposit50 = r.pct < 100; render(); };
   });
   return h;
 }
@@ -1458,7 +1489,7 @@ ACT.issSave = async el => {
   try {
     const { doc, total, invoiceAmt, lines } = await buildInvoicePdf(d);
     const issue = JSON.parse(JSON.stringify({ ...d, lines: d.lines.filter(l => l.name || l.desc || +l.qty) }));
-    const inv = { vendorId: d.vendorId, invoiceNo: d.invoiceNo, invoiceDate: d.invoiceDate, dueDate: '', amount: invoiceAmt, salesAmount: d.deposit50 ? total : null,
+    const inv = { vendorId: d.vendorId, invoiceNo: d.invoiceNo, invoiceDate: d.invoiceDate, dueDate: '', amount: invoiceAmt, salesAmount: d.deposit50 ? total : null, dep50: d.deposit50 ? 'full' : null,
       memo: lines.map(l => `${l.name} ${fmtUSD(l.qty, 0)} ${l.unit}`.trim()).join(' + ').slice(0, 80), note: d.remarks || '', poNo: d.poNo || '',
       product: productOf(lines.map(l => l.name + ' ' + l.desc).join(' ')), lines: lines.length > 1 ? lines.map(l => ({ memo: `${l.name} ${fmtUSD(l.qty, 0)} ${l.unit}`, amount: d.deposit50 ? r2(l.amount / 2) : l.amount, product: productOf(l.name + ' ' + l.desc) })) : undefined,
       source: 'issued', issue, needsReview: false, reviewFlags: [], seq: Date.now() };
@@ -1609,7 +1640,7 @@ function invoiceModal(inv, preset = {}) {
     <div class="f full"><label>${t('memo')}</label><input class="inp" id="iMemo" value="${esc(inv.memo)}"></div>
     <div class="f"><label>${t('account')}</label><select class="inp" id="iAcc">${productOptions(inv.product || productOf(inv.memo))}</select><span class="hint" id="iAccHint"></span></div>
     <div class="f"><label>${t('poNo')}</label><input class="inp" id="iPo" value="${esc(inv.poNo || '')}"></div>
-    <div class="f"><label>${t('salesAmtFull')}</label><div style="display:flex;gap:6px"><input class="inp" id="iSales" type="number" step="0.01" value="${inv.salesAmount ?? ''}" placeholder="= ${t('amount')}" style="flex:1"><button class="btn sm ed" type="button" id="iSalesX2">× 2</button></div><span class="hint">${t('salesHint')}</span></div>
+    <div class="f"><label>${t('salesAmtFull')}</label><div style="display:flex;gap:6px"><input class="inp" id="iSales" type="number" step="0.01" value="${inv.salesAmount ?? ''}" placeholder="= ${t('amount')}" style="flex:1"><button class="btn sm ed" type="button" id="iSalesX2" title="${t('dep50Apply')}">× 2</button><button class="btn sm ed" type="button" id="iSalesD2" title="${t('dep50Full')}">÷ 2</button></div><span class="hint">${t('salesHint')} · ×2: ${t('dep50Apply')} · ÷2: ${t('dep50Full')}</span></div>
     <div class="f"><label>${t('note')}</label><input class="inp" id="iNote" value="${esc(inv.note || '')}"></div>
     ${inv.lines && inv.lines.length > 1 ? `<div class="f full"><label>${LANG === 'ko' ? '품목 라인 (엑셀)' : 'Lines (Excel)'}</label><div class="muted" style="font-size:12px">${inv.lines.map(l => `${esc(l.memo || '—')} · ${money(l.amount)}`).join('<br>')}</div></div>` : ''}
     ${inv.needsReview ? `<div class="f full"><div class="warnbox">${(inv.reviewFlags || []).map(k => '• ' + t('rv_' + k, { y: (inv.invoiceDate || '').slice(0, 4) })).join('<br>')}<br><label class="chk" style="margin-top:6px;color:var(--warn)"><input type="checkbox" id="iRev" checked> ${t('clearReview')}</label></div></div>` : ''}
@@ -1624,10 +1655,12 @@ function invoiceModal(inv, preset = {}) {
     const d2 = findDuplicates({ vendorId: $('#iV').value, invoiceNo: $('#iNo').value, amount: +$('#iAmt').value, invoiceDate: d }, inv.id);
     $('#iDupBox').innerHTML = d2.length ? `<div class="warnbox">⚠ ${t('dup', { x: d2.map(i => `${i.invoiceNo || '—'} (${i.invoiceDate}, ${money(i.amount)})`).join(', ') })}</div>` : '';
   };
-  $('#iSalesX2').onclick = () => { $('#iSales').value = r2((+$('#iAmt').value || 0) * 2); };
+  $('#iSalesX2').onclick = () => { $('#iSales').value = r2((+$('#iAmt').value || 0) * 2); inv.dep50 = 'half'; };
+  $('#iSalesD2').onclick = () => { const full = +$('#iAmt').value || 0; $('#iSales').value = r2(full); $('#iAmt').value = r2(full / 2); inv.dep50 = 'full'; };
   ['iV', 'iDate', 'iNo', 'iAmt'].forEach(id => $('#' + id).addEventListener('input', upd)); upd();
   $('#iSave').onclick = async () => {
     const doc = { ...inv, vendorId: $('#iV').value, invoiceNo: $('#iNo').value.trim(), amount: r2($('#iAmt').value), invoiceDate: $('#iDate').value, dueDate: $('#iDue').value, memo: $('#iMemo').value.trim(), note: $('#iNote').value.trim(), product: $('#iAcc').value, poNo: $('#iPo').value.trim(), salesAmount: $('#iSales').value === '' ? null : r2($('#iSales').value) };
+    if (doc.salesAmount == null) doc.dep50 = null;
     if (doc.lines && doc.lines.length === 1) delete doc.lines;
     if (!doc.vendorId || !doc.invoiceDate || !$('#iAmt').value) return toast(t('required'), true);
     if ($('#iRev') && $('#iRev').checked) { doc.needsReview = false; doc.reviewFlags = []; }
@@ -1748,6 +1781,7 @@ function vendorForm(v) {
     <div class="f full"><label>${t('aliases')}</label><input class="inp" id="vfAl" value="${esc((v.aliases || []).join(', '))}"><span class="hint">${t('aliasesHint')}</span></div>
     <div class="f"><label>${t('invRegex')}</label><input class="inp" id="vfRx" value="${esc(v.invRegex || '')}"><span class="hint">${t('invRegexHint')}</span></div>
     <div class="f"><label>${t('active')}</label><label class="chk"><input type="checkbox" id="vfAct" ${v.active !== false ? 'checked' : ''}> ${t('active')}</label></div>
+    <div class="f full"><label>${LANG === 'ko' ? 'PO별 청구 비율 (%)' : 'Billing % by PO'}</label><input class="inp" id="vfPo" value="${esc(poRulesText(v))}" placeholder="7600009240=100, 7600006456=50"><span class="hint">${LANG === 'ko' ? 'PO=비율. 50이면 AR 청구액은 인보이스 합계의 50%, 매출은 합계 그대로.' : 'PO=percent. 50 → AR amount is 50% of the invoice total; sales stays at the total.'}</span></div>
     <div class="f full"><label>${t('notes')}</label><input class="inp" id="vfNotes" value="${esc(v.notes || '')}"></div>
   </div>`;
 }
@@ -1756,7 +1790,7 @@ function readVendorForm(v) {
   const name = $('#vfName').value.trim(); if (!name) { toast(t('name') + '?', true); return null; }
   if (S.vendors.some(x => x.id !== v.id && normKey(x.name) === normKey(name))) { toast(t('vendorExists'), true); return null; }
   const rx = $('#vfRx').value.trim(); if (rx) { try { new RegExp(rx); } catch { toast(t('regexErr'), true); return null; } }
-  return { ...v, name, group: $('#vfGroup').value, terms: tt === 'dom' ? { type: 'dom', day: tv || 25 } : tt === 'receipt' ? { type: 'receipt' } : { type: 'net', days: isNaN(tv) ? 30 : tv }, aliases: $('#vfAl').value.split(',').map(s => s.trim()).filter(Boolean), invRegex: rx, active: $('#vfAct').checked, notes: $('#vfNotes').value.trim() };
+  return { ...v, name, group: $('#vfGroup').value, terms: tt === 'dom' ? { type: 'dom', day: tv || 25 } : tt === 'receipt' ? { type: 'receipt' } : { type: 'net', days: isNaN(tv) ? 30 : tv }, aliases: $('#vfAl').value.split(',').map(s => s.trim()).filter(Boolean), invRegex: rx, active: $('#vfAct').checked, notes: $('#vfNotes').value.trim(), poRules: parsePoRules($('#vfPo').value) };
 }
 ACT.newVendor = (el, e, preset = {}) => {
   openModal({ title: t('newVendor'), body: vendorForm({ name: preset.name || '', group: 'operating' }), foot: `<span class="sp"></span><button class="btn" data-act="closeModal">${t('cancel')}</button><button class="btn pri ed" id="vfSave">${t('save')}</button>`, wide: true });
@@ -2141,6 +2175,7 @@ function regForm(it) {
     <div class="f full"><label>${conf(cf.memo)} ${t('memo')}</label><input class="inp rf" data-k="memo" value="${esc(f.memo || '')}"></div>
     <div class="f"><label>${conf(cf.product)} ${t('account')}</label><select class="inp rf" data-k="product">${productOptions(f.product)}</select></div>
     <div class="f"><label>${conf(cf.poNo)} ${t('poNo')}</label><input class="inp rf" data-k="poNo" value="${esc(f.poNo || '')}"></div>
+    <div class="f"><label>${conf(cf.salesAmount)} ${t('salesAmtFull')}</label><input class="inp rf" data-k="salesAmount" type="number" step="0.01" value="${f.salesAmount ?? ''}" placeholder="= ${t('amount')}">${f.salesAmount || f.ruleNote ? `<span class="hint">${f.ruleNote ? esc(f.ruleNote) + ' · ' : ''}AR ${money(f.amount)} / ${t('salesAmt')} ${money(f.salesAmount || f.amount)}</span>` : ''}</div>
     <div class="f"><label>${t('note')}</label><input class="inp rf" data-k="note" value="${esc(f.note || '')}"></div>
   </div>
   ${f.currency && f.currency !== 'USD' ? `<div class="warnbox" style="margin-top:10px">${t('currency')}: ${esc(f.currency)}</div>` : ''}
@@ -2161,9 +2196,10 @@ function bindRegister() {
   drop.ondrop = e => { e.preventDefault(); drop.classList.remove('on'); addRegFiles([...e.dataTransfer.files]); };
   $$('.rf').forEach(el => el.addEventListener('change', () => {
     const it = regItem(REG.sel); if (!it) return; const k = el.dataset.k;
-    it.fields[k] = k === 'amount' ? (el.value === '' ? '' : r2(el.value)) : el.value;
+    it.fields[k] = (k === 'amount' || k === 'salesAmount') ? (el.value === '' ? (k === 'amount' ? '' : null) : r2(el.value)) : el.value;
     if (it.fields.conf) it.fields.conf[k] = 'hi';
-    if (['vendorId', 'invoiceNo', 'amount', 'invoiceDate'].includes(k)) render();
+    if (k === 'vendorId' || k === 'poNo') applyPoRule(it.fields);
+    if (['vendorId', 'invoiceNo', 'amount', 'invoiceDate', 'poNo', 'salesAmount'].includes(k)) render();
   }));
 }
 function addRegFiles(files) {
@@ -2180,7 +2216,7 @@ async function processQueue() {
       try {
         const ex = await extractText(it.file, ph => { it.phase = ph; if (location.hash === '#register') render(); });
         it.text = ex.text; it.method = ex.method;
-        it.fields = parseInvoiceText(ex.text, it.file.name);
+        it.fields = parseInvoiceText(ex.text, it.file.name); applyPoRule(it.fields);
         it.status = 'ready';
       } catch (e) { console.error(e); it.status = 'ready'; it.error = (LANG === 'ko' ? '텍스트 추출 실패: ' : 'Text extraction failed: ') + e.message; it.fields = parseInvoiceText('', it.file.name); }
       if (location.hash === '#register') render();
@@ -2201,7 +2237,7 @@ ACT.regAI = async () => {
     it.fields = { ...it.fields, ...Object.fromEntries(Object.entries(r).filter(([k, v]) => v !== undefined && v !== null && v !== '')), conf: { ...it.fields.conf, ...r.conf } };
     if (!r.vendorId) it.fields.vendorId = it.fields.vendorId || '';
     it.fields.note = keepNote;
-    it.method = 'ai'; it.error = ''; toast(t('aiDone'));
+    applyPoRule(it.fields); it.method = 'ai'; it.error = ''; toast(t('aiDone'));
   } catch (e) { it.error = 'AI: ' + e.message; }
   it.aiBusy = false; render();
 };
@@ -2217,7 +2253,7 @@ ACT.regSave = async el => {
   const v = vendorById(f.vendorId);
   el.disabled = true;
   try {
-    const doc = { vendorId: f.vendorId, invoiceNo: (f.invoiceNo || '').trim(), invoiceDate: f.invoiceDate, dueDate: f.dueDate || '', amount: r2(f.amount), memo: (f.memo || '').trim(), note: (f.note || '').trim(), product: f.product || '', poNo: (f.poNo || '').trim(), fileName: it.file.name, source: 'upload', parsedBy: it.method, needsReview: false, reviewFlags: [], seq: Date.now() };
+    const doc = { vendorId: f.vendorId, invoiceNo: (f.invoiceNo || '').trim(), invoiceDate: f.invoiceDate, dueDate: f.dueDate || '', amount: r2(f.amount), memo: (f.memo || '').trim(), note: (f.note || '').trim(), product: f.product || '', poNo: (f.poNo || '').trim(), salesAmount: f.salesAmount != null && f.salesAmount !== '' ? r2(f.salesAmount) : null, dep50: f.salesAmount ? (f.dep50 || 'full') : null, fileName: it.file.name, source: 'upload', parsedBy: it.method, needsReview: false, reviewFlags: [], seq: Date.now() };
     var saved = await Store.put('invoices', doc);
   } catch (e) { el.disabled = false; it.error = e.message; render(); return; }
   it.status = 'saved'; it.savedId = saved.id; it.error = '';
