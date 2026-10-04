@@ -174,6 +174,7 @@ label.drop{display:block}
 .preview{height:calc(100vh - 230px);min-height:480px;overflow:hidden;display:flex}
 .preview .imgwrap{flex:1;border-radius:var(--r);background:#eef0f3;overflow:auto;padding:10px;display:flex;flex-direction:column;gap:10px;align-items:center}
 .preview img{max-width:100%;box-shadow:var(--shadow);background:#fff}
+.xlprev table{border-collapse:collapse}.xlprev td{border:1px solid #e5e7eb;padding:2px 5px;white-space:nowrap}
 .preview .pv-bar{display:flex;gap:6px;position:sticky;top:0;align-self:flex-end}
 .empty{padding:40px;text-align:center;color:var(--muted)}
 .warnbox{background:var(--warn-l);color:var(--warn);border-radius:8px;padding:9px 12px;font-size:12px;margin-bottom:10px}
@@ -705,6 +706,7 @@ function itemsToLines(items) {
   });
 }
 async function extractText(file, onStatus) {
+  if (/\.xlsx?$/i.test(file.name)) return { text: await xlsxToText(file), method: 'excel', pages: 1 };
   const isPdf = /pdf$/i.test(file.type) || /\.pdf$/i.test(file.name);
   if (isPdf) {
     await pdfReady();
@@ -712,7 +714,7 @@ async function extractText(file, onStatus) {
     const n = Math.min(pdf.numPages, 4); let lines = [];
     for (let p = 1; p <= n; p++) { const page = await pdf.getPage(p); const tc = await page.getTextContent(); lines.push(...itemsToLines(tc.items)); if (p < n) lines.push('---'); }
     let text = lines.join('\n');
-    if (text.replace(/\s|-/g, '').length >= 40) return { text, method: 'rules', pages: pdf.numPages };
+    if (text.replace(/\s|-/g, '').length >= 40 && !looksGarbled(text)) return { text, method: 'rules', pages: pdf.numPages };
     // scanned PDF → OCR first 2 pages
     onStatus && onStatus('ocr'); let ocr = '';
     for (let p = 1; p <= Math.min(pdf.numPages, 2); p++) {
@@ -725,6 +727,12 @@ async function extractText(file, onStatus) {
   }
   onStatus && onStatus('ocr');
   return { text: await ocrImage(file, onStatus), method: 'ocr', pages: 1 };
+}
+/* PDFs whose fonts have no text mapping (e.g. our Commercial Invoice export, Type 3 fonts) give junk text → use OCR */
+function looksGarbled(text) {
+  const s = text.replace(/\s/g, ''); if (!s) return true;
+  const ok = (s.match(/[A-Za-z0-9.,:;\/$#%&()'"@+\-]/g) || []).length;
+  return ok / s.length < 0.9 || !/\b(invoice|amount|total|usd|date|qty|quantity|price)\b/i.test(text);
 }
 /* preview: render PDF pages to PNG data URLs (works in every browser, no PDF plugin needed) */
 async function renderPdfPages(file, maxPages = 5) {
@@ -846,7 +854,7 @@ function parseInvoiceText(text, fileName = '') {
   else { const all = findMoney(text).filter(m => m.v > 0); if (all.length) { res.amount = r2(Math.max(...all.map(m => m.v))); res.conf.amount = 'mid'; } }
 
   // terms
-  const tn = text.match(/\bnet\s*(\d{1,3})\b/i); if (tn) res.terms = { type: 'net', days: +tn[1] };
+  const tn = text.match(/(?<![.@\w])net[ \t]*(\d{1,3})\b(?![\/.,]\d)/i); if (tn) res.terms = { type: 'net', days: +tn[1] };
   else if (/due\s*(up)?on\s*receipt/i.test(text)) res.terms = { type: 'receipt' };
   if (!res.dueDate && res.terms && res.invoiceDate) { res.dueDate = calcDue(res.invoiceDate, res.terms); res.conf.dueDate = 'mid'; }
 
@@ -861,7 +869,22 @@ function parseInvoiceText(text, fileName = '') {
     }
   }
   // PO number (customer purchase order)
-  { const m = text.match(/\b(?:customer\s*)?P\.?\s?O\.?\s*(?:no\.?|number|#)?\s*[:#.]?\s*([A-Z0-9][A-Z0-9\-]{4,})/i); if (m && /\d{4}/.test(m[1]) && !OUR_INV_RX.test(m[1])) { res.poNo = m[1]; res.conf.poNo = 'hi'; } }
+  { const m = text.match(/\bP\s*\/?\s*O\s*(?:no\.?|number|#)?\s*[:#.]?\s*(\d{6,})/i) || text.match(/\b(?:customer\s*)?P\.?\s?O\.?\s*(?:no\.?|number|#)?\s*[:#.]?\s*([A-Z0-9][A-Z0-9\-]{4,})/i); if (m && /\d{4}/.test(m[1]) && !OUR_INV_RX.test(m[1])) { res.poNo = m[1]; res.conf.poNo = 'hi'; } }
+  // JNFAM Commercial Invoice layout: line item "HF 49%  Hydrofluoric Acid (HF) 49%  18,570 Kg ISO  USD 2.60  USD 48,282.00", total "USD 48,282.00"
+  if (/commercial\s+invoice|consignee/i.test(text)) {
+    const items = lines.filter(l => !/^\s*[\d,]+(?:\.\d+)?\s*(kg|lbs?|gal|ea|mt)\b/i.test(l) && /[\d,]+(?:\.\d+)?\s*(kg|lbs?|gal|ea|mt)\b/i.test(l) && /(USD|US\$|\$)\s*[\d,]+\.\d{2}/i.test(l));
+    if (items.length) {
+      const parts = items.map(l => { const q = l.match(/([\d,]+(?:\.\d+)?)\s*(kg|lbs?|gal|ea|mt)\b/i); const lead = (l.match(/^\s*([A-Za-z0-9]+(?:\s+\d+(?:\.\d+)?%)?)/) || [])[1] || ''; const up = (l.match(/(?:USD|US\$|\$)\s*([\d,]*\.\d{2,4})/i) || [])[1]; return { lead, q: q ? `${q[1]} ${q[2]}` : '', up, amt: findMoney(l).map(m => m.v).filter(v => v > 0).pop() || 0 }; });
+      res.memo = parts.map(p => [p.lead, p.q, p.up ? '@ $' + p.up : ''].filter(Boolean).join(' ')).join(' + ').slice(0, 80); res.conf.memo = 'hi';
+      const sumItems = r2(parts.reduce((s, p) => s + p.amt, 0));
+      const usd = []; for (const l of lines) for (const m of l.matchAll(/(?:USD|US\$|usp|\$)\s*([\d,]+\.\d{2})\b/gi)) usd.push(+m[1].replace(/,/g, ''));
+      const tot = usd.length ? Math.max(...usd) : sumItems;
+      if (tot) { res.amount = r2(tot); res.conf.amount = Math.abs(tot - sumItems) < 0.01 || usd.filter(v => v === tot).length > 1 ? 'hi' : 'mid'; }
+    }
+    // consignee line = customer
+    const ci = lines.findIndex(l => /consignee/i.test(l));
+    if (!res.vendorId && ci >= 0) { const v = detectVendor(lines.slice(ci, ci + 3).join(' '), ''); if (v) { res.vendorId = v.id; res.conf.vendorId = 'hi'; } }
+  }
   // product from the line items
   res.product = productOf(res.memo) || productOf(text.slice(0, 3000)); if (res.product) res.conf.product = res.memo ? 'hi' : 'mid';
   // otherwise customer's latest memo as a starting point
@@ -871,6 +894,7 @@ function parseInvoiceText(text, fileName = '') {
 
 /* ---------- Claude API ---------- */
 async function aiParse(file) {
+  if (/\.xlsx?$/i.test(file.name)) throw new Error(LANG === 'ko' ? '엑셀 파일은 셀 값을 그대로 읽어 AI가 필요 없습니다.' : 'Excel files are read directly; AI is not needed.');
   const model = shared('aiModel', 'claude-sonnet-4-5');
   const isPdf = /pdf$/i.test(file.type) || /\.pdf$/i.test(file.name);
   const data = await fileToB64(file);
@@ -1096,7 +1120,7 @@ function vDashboard() {
     const el = $('#chMonthly'); if (!el || !window.Chart) return;
     const css = getComputedStyle(document.documentElement);
     const mo = ps.monthly;
-    CH.m = new Chart(el, {
+    Chart.getChart(el)?.destroy(); CH.m = new Chart(el, {
       data: { labels: mo.map(x => monLabel(x.mo)), datasets: [
         { type: 'bar', label: t('invoiced'), data: mo.map(x => x.invoiced), backgroundColor: css.getPropertyValue('--s1').trim(), borderRadius: 4, maxBarThickness: 18, order: 2 },
         { type: 'bar', label: t('paid'), data: mo.map(x => x.received), backgroundColor: css.getPropertyValue('--s2').trim(), borderRadius: 4, maxBarThickness: 18, order: 2 },
@@ -1209,7 +1233,7 @@ function vSales() {
     const series = (f.view === 'product' ? d.byProd.map(e => ({ k: e.key, label: prodLabel(e.key), m: e.m })) : d.byCust.map(e => ({ k: e.key, label: vName(e.key), m: e.m })));
     const top = series.slice(0, 8), rest = series.slice(8);
     if (rest.length) top.push({ label: LANG === 'ko' ? '기타' : 'Others', m: rest.reduce((acc, s) => { for (const mo in s.m) acc[mo] = (acc[mo] || 0) + s.m[mo]; return acc; }, {}) });
-    CH.s = new Chart(el, { type: 'bar', data: { labels: ms.map(monLabel), datasets: top.map((s, k) => ({ label: s.label, data: ms.map(mo => s.m[mo] || 0), backgroundColor: SAL_COLORS[k % SAL_COLORS.length], borderRadius: 2, maxBarThickness: 34, stack: 's' })) },
+    Chart.getChart(el)?.destroy(); CH.s = new Chart(el, { type: 'bar', data: { labels: ms.map(monLabel), datasets: top.map((s, k) => ({ label: s.label, data: ms.map(mo => s.m[mo] || 0), backgroundColor: SAL_COLORS[k % SAL_COLORS.length], borderRadius: 2, maxBarThickness: 34, stack: 's' })) },
       options: { maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } }, tooltip: { mode: 'index', intersect: false, callbacks: { label: x => x.raw ? `${x.dataset.label}: ${money(x.raw, 0)}` : null, footer: xs => `${t('total')}: ${money(xs.reduce((s, x) => s + x.raw, 0), 0)}` } } }, scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, grid: { color: '#eef0f3' }, border: { display: false }, ticks: { callback: v => moneyK(v) } } } } });
   });
   return h;
@@ -1251,6 +1275,233 @@ ACT.dep50 = () => {
   const commit = async x2 => { const items = sel(); if (!items.length) return; await Store.putMany('invoices', items.map(i => Store.stamp({ ...i, salesAmount: x2 ? r2(i.amount * 2) : null }))); closeModal(); toast(t('savedT')); render(); };
   $('#dApply').onclick = () => commit(true); $('#dClr').onclick = () => commit(false);
 };
+/* =====================================================================
+   Invoice issuing — JNFAM Commercial Invoice PDF (jsPDF, Times) + AR registration
+   ===================================================================== */
+Object.assign(L, {
+  issue: ['Issue Invoice', '인보이스 발행'], issueSub: ['Creates the Commercial Invoice PDF and registers it in AR at the same time.', '커머셜 인보이스 PDF를 만들고 AR에 동시에 등록합니다.'],
+  shipTo: ['Consignee', '수하인 (Consignee)'], billName: ['Name on invoice', '인보이스 표기명'], billAddr: ['Address on invoice', '인보이스 주소'], discharge: ['Discharge site', '도착지 (Discharge site)'],
+  loadSite: ['Loading site', '선적지 (Loading site)'], carrier: ['Carrier', '운송사 (Carrier)'], notify: ['Notify party', '통지처 (Notify party)'], remarks: ['Remarks (extra)', '비고 (추가)'],
+  items: ['Line items', '품목'], prodName: ['Product name', '제품명'], descr: ['Description', '품명 설명'], descr2: ['Description line 2', '설명 2줄 (탱크 번호 등)'], qty: ['Quantity', '수량'], unit: ['Unit', '단위'], pack: ['Package', '포장'],
+  unitPrice: ['Unit price', '단가'], lineNote: ['Shipping note', '선적 메모 (Shuttle/BOL)'], addLine: ['Add line', '품목 추가'], deposit50: ['Deduct 50% deposit', '50% 선수금 공제'],
+  deposit50Hint: ['Invoice amount = 50% of the total; sales amount keeps the full total.', '청구액 = 합계의 50%, 판매액은 전체 합계로 기록'],
+  preview: ['Preview PDF', 'PDF 미리보기'], issueSave: ['Save PDF & register', 'PDF 저장 + AR 등록'], reprint: ['Re-create PDF', 'PDF 다시 만들기'], issued: ['Issued', '발행됨'],
+  tplSec: ['Invoice template (issuing)', '인보이스 양식 (발행용)'], shipper: ['Shipper (our company)', '발송인 (자사)'], shipperAddr: ['Address', '주소'], telLine: ['Tel / E-mail line', '전화·이메일 줄'],
+  bankSec: ['Bank information', '은행 정보'], beneficiary: ['Beneficiary', '수취인'], bankAcct: ['Bank account', '계좌번호'], swift: ['Swift code', 'Swift'], aba: ['ABA / Routing', 'ABA / Routing'], bankAddr: ['Bank address', '은행 주소'],
+  signedBy: ['Signed by', '서명'], logo: ['Logo', '로고'], seal: ['Seal', '직인'], change: ['Change', '변경'], invNoDup: ['This invoice number already exists.', '이미 있는 인보이스 번호입니다.'],
+  needLine: ['Enter at least one line with quantity and unit price.', '수량·단가가 있는 품목을 1개 이상 입력하세요.'],
+});
+const DEFAULT_LOGO = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAdAE4DASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD3yiiigDP1LVLPSbcT3lxHBGzbAznv6UadqlhqkBnsriOeMHYzI2cN6frXmnxYv2bUrHTlLBYojMRn5TuOBx7bD+dUvhpd3Gh+OdW8PXzKpnyq53cvF/d9mTJz7CnQg60qnL9hHZicPChhqVVv3pv8P6sek6p4x8P6RdfZL7VIIZx96PJZl+u3pV3Sta03W7ZrnTbqO5hVtjOmcbvT9a8i8DeH9O8ca5r+taxazS2zzboUZ2VcuWbG5cZKrtX/AIF9K9HiTw34B0vy1BsLSWSSXH7yXcyRF3b+I/cjY/8AAfWurEUqNL3Nef8AA8ynOc9eh1FFc+vi7Qn0+LUE1JHtJbKa9SRI2b9zFt81unVd65X73twaWTxVpcGnLf3M81lbtMIAb21ltzvxu+66htu3LFvugKxz8prkNzforM/tmw/4SL+wvtB/tH7L9r8jaf8AVb9m7d0+9+NO0zVLHX9Mj1DTbhLm0lZtku07W2sVOPxU0AaB5qhd6xp9j5gubyCIxqC4eQArnpWgelefa98P7fWtcl1E6jNE0jL5qbA2cDb8pGNvA96zlJpe6jpwtKnUnatK0Tk9JZvF3xLF8qlIvP8APO3hgkeAmfrtQH61X+LmmNp3ia31a2cx/b4WR2R2yWVdjfgUIX35r1nw74asPD1q8NkrFmOXlkO5n9Mn2pninwvZeK9PTT7+W4jijlWYNAVDbgrD+IH1NdOW1Pq1Tnl13KzmusY1ClpGCsjJ+F2mf2X4Gs2eIpLdk3L7mzu3fdP/AHwEqLxZ4d8QeJXms92mxWca3BtJDI/mFpLR4QrptwMPK7bgx4A+Wuxs7SGws4LS3TZDCgijHoqrgVYB5NKtU9pUlPucMI8kUjz298B373uqmzvIBZ3ui3dotvIxxDd3Aj3uuF+43lhj33MzfxVb1vwI2tXNpYm/vbfRre3uN7LetNPLLKPK+bzlf5REZVzuz8/GMV3FFZlnmtx4L8R38EF7NqFrba6mn21j9tikd2yv2hJnztRuUnEgXj94i54XdXXeGdG/4RzQ102KKMRx3Vy8UUX3UjeZ3QfgrAVuUUAf/9k=', DEFAULT_SEAL = 'data:image/jpeg;base64,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';
+const TPL_DEFAULT = {
+  shipper: 'JNFAM', shipperAddr: '825 Great SW Pkwy, South Fulton, GA 30336', telLine: 'Tel.  770 727 8061 (702), E-mail : thkim@jnfam.net',
+  beneficiary: 'JNF AM LLC', bankAcct: '2327000150', swift: 'HVBKUS3N', aba: '026007443', bankAddr: '33360 Satelite Boulevard, #14 Duluth, GA 30096',
+  loading: 'Fulton Atlanta, Georgia', signedBy: 'JNFAM LLC', logo: DEFAULT_LOGO, seal: DEFAULT_SEAL,
+};
+const invTpl = () => ({ ...TPL_DEFAULT, ...(shared('invTpl', {}) || {}) });
+let _jspdf = null;
+const jsPdfReady = () => (_jspdf = _jspdf || (window.jspdf ? Promise.resolve() : loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js')));
+const fmtUSD = (n, dec = 2) => (+n || 0).toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: Math.max(dec, 4) });
+const usDate = s => { if (!s) return ''; const [y, m, d] = s.split('-').map(Number); return `${m}/${d}/${y}`; };
+
+/* d = { invoiceNo, invoiceDate, consName, consAddr, notify, loading, discharge, carrier, poNo, remarks, lines:[{name, desc, desc2, qty, unit, pack, price, note}], deposit50 } */
+function issueTotals(d) {
+  const lines = (d.lines || []).filter(l => l.name || l.desc || +l.qty || +l.price).map(l => ({ ...l, amount: r2((+l.qty || 0) * (+l.price || 0)) }));
+  const total = r2(lines.reduce((s, l) => s + l.amount, 0));
+  const invoiceAmt = d.deposit50 ? r2(total / 2) : total;
+  const units = [...new Set(lines.map(l => `${l.unit || 'Kg'}${l.pack ? '   ' + l.pack : ''}`))];
+  const qtyTot = units.length === 1 ? `${fmtUSD(lines.reduce((s, l) => s + (+l.qty || 0), 0), 0)} ${units[0]}` : '';
+  return { lines, total, invoiceAmt, qtyTot };
+}
+async function buildInvoicePdf(d) {
+  await jsPdfReady();
+  const T = invTpl(); const { lines, total, invoiceAmt, qtyTot } = issueTotals(d);
+  const doc = new jspdf.jsPDF({ unit: 'pt', format: 'letter' });
+  const X0 = 74, X1 = 480, XM = 304; const COL = [74, 170, 304, 359, 412, 480];
+  const txt = (s, x, y, o = {}) => { doc.setFont('times', o.b ? 'bold' : 'normal'); doc.setFontSize(o.size || 8.5); doc.text(String(s ?? ''), x, y, o.align ? { align: o.align } : undefined); };
+  const hl = (y, a = X0, b = X1) => doc.line(a, y, b, y); const vl = (x, a, b) => doc.line(x, a, x, b);
+  const img = (src, x, y, w, h) => { try { if (src) doc.addImage(src, /png/i.test(src.slice(0, 30)) ? 'PNG' : 'JPEG', x, y, w, h); } catch { } };
+  doc.setLineWidth(0.6); doc.rect(X0, 63, X1 - X0, 649);
+  img(T.logo, 85, 72, 49, 18);
+  txt('COMMERCIAL INVOICE', 277, 87, { b: true, size: 16, align: 'center' });
+  hl(146); vl(XM, 146, 348);
+  // 1 / 7
+  txt('1. Shipper/Exporter', X0 + 2, 154, { b: true }); txt(T.shipper, 100, 164); txt(T.shipperAddr, 100, 175); txt(T.telLine, 100, 196);
+  txt('7. NO & Date of Invoice', XM + 2, 154, { b: true }); txt(d.invoiceNo, XM + 2, 164); txt(usDate(d.invoiceDate), X1 - 2, 164, { align: 'right' }); hl(167, XM, X1);
+  hl(200);
+  // 2 / 9
+  txt('2. Consignee/Importer', X0 + 2, 208, { b: true }); txt(d.consName, 100, 229, { b: true });
+  (doc.splitTextToSize(d.consAddr || '', 190)).slice(0, 2).forEach((s, k) => txt(s, 100, 239 + k * 10));
+  txt('9. Information of Bank', XM + 2, 208, { b: true });
+  txt(`Beneficiary: ${T.beneficiary}`, XM + 2, 229); txt(`Bank account : ${T.bankAcct}`, XM + 2, 239); txt(`Swift Code : ${T.swift}`, XM + 2, 250); txt(`ABA or Routing : ${T.aba}`, XM + 2, 260);
+  txt(`Address : ${T.bankAddr}`, XM + 2, 270, { size: 6.5 });
+  hl(273);
+  // 3 / 10
+  txt('3. Notify Party', X0 + 2, 282, { b: true }); txt(d.notify || 'Same as consignee', 100, 292);
+  txt('10. Remarks', XM + 2, 282, { b: true });
+  const rem = [d.poNo ? `Customer PO#: P/O NO: ${d.poNo}` : '', d.remarks || ''].filter(Boolean).join('  ');
+  (doc.splitTextToSize(rem, X1 - XM - 6)).slice(0, 3).forEach((s, k) => txt(s, XM + 2, 307 + k * 10));
+  // 4 5 6
+  hl(305, X0, XM); vl(170, 305, 348);
+  txt('4. Loading Site', X0 + 2, 313, { b: true }); txt(d.loading || T.loading, X0 + 2, 323);
+  txt('5.Discharge site', 172, 313, { b: true }); txt(d.discharge || '', 172, 323);
+  hl(326, X0, 170); txt('6. Carrier', X0 + 2, 334, { b: true }); txt(d.carrier || '', X0 + 2, 344);
+  // table header
+  hl(348); hl(359); [1, 2, 3, 4].forEach(k => vl(COL[k], 348, 359));
+  ['11. Product Name', '12. Description of goods', '13. Quantity', '14. Unit Price', '15. Amount'].forEach((h, k) => txt(h, (COL[k] + COL[k + 1]) / 2, 356, { b: true, size: 6.5, align: 'center' }));
+  let y = 377;
+  for (const l of lines) {
+    txt(l.name, (COL[0] + COL[1]) / 2, y, { align: 'center' });
+    txt(l.desc, (COL[1] + COL[2]) / 2, y, { align: 'center' });
+    txt(`${fmtUSD(l.qty, 0)} ${l.unit || 'Kg'}${l.pack ? '  ' + l.pack : ''}`, COL[2] + 3, y, { size: 8 });
+    txt(`USD ${fmtUSD(l.price)}`, COL[3] + 8, y, { size: 8 });
+    txt(`USD ${fmtUSD(l.amount)}`, COL[5] - 8, y, { align: 'right' });
+    let y2 = y + 13;
+    if (l.desc2) txt(l.desc2, (COL[1] + COL[2]) / 2, y2, { align: 'center' });
+    if (l.note) txt(l.note, COL[2] + 1, y2, { size: 6 });
+    y += (l.desc2 || l.note) ? 30 : 18;
+  }
+  if (d.deposit50) {
+    txt('Less 50% Deposit', (COL[1] + COL[2]) / 2, y, { align: 'center' });
+    txt(`(USD ${fmtUSD(total - invoiceAmt)})`, COL[5] - 8, y, { align: 'right' }); y += 18;
+  }
+  // totals
+  hl(530);
+  if (qtyTot) txt(qtyTot, 298, 549, { b: true });
+  txt('USD', 406, 549, { b: true }); txt(fmtUSD(invoiceAmt), 475, 549, { b: true, align: 'right' });
+  // sign
+  img(T.seal, 420, 593, 52, 59);
+  txt('Signed By', 295, 662, { b: true }); txt(T.signedBy, 363, 662);
+  img(T.logo, 309, 683, 50, 19); txt(T.signedBy, 368, 695);
+  doc.setProperties({ title: `${d.invoiceNo} Commercial Invoice`, author: T.beneficiary, subject: `Invoice ${d.invoiceNo} USD ${fmtUSD(invoiceAmt)}` });
+  return { doc, total, invoiceAmt, lines };
+}
+
+/* ---------- issue view ---------- */
+const ISS = { d: null };
+function newIssueDraft(vid) {
+  const v = vendorById(vid);
+  return { vendorId: vid || '', invoiceNo: '', invoiceDate: todayStr(), consName: v?.billName || '', consAddr: v?.billAddr || '', notify: 'Same as consignee', loading: invTpl().loading, discharge: v?.discharge || '', carrier: '', poNo: v?.lastPo || '', remarks: '', deposit50: false,
+    lines: [{ name: '', desc: '', desc2: '', qty: '', unit: 'Kg', pack: 'ISO', price: '', note: '' }] };
+}
+function suggestInvNo(d) {
+  const base = 'JAIN-' + (d.invoiceDate || todayStr()).slice(2).replace(/-/g, '');
+  const suf = (productOf(d.lines.map(l => l.name + ' ' + l.desc).join(' ')) || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase().replace('PARTSSERVICE', '').replace('DUTYREFUND', '');
+  let no = base + (suf === 'HCL' ? 'HCl' : suf); let k = 0;
+  while (S.invoices.some(i => normKey(i.invoiceNo) === normKey(no))) no = base + suf + String.fromCharCode(65 + k++);
+  return no;
+}
+function vIssue() {
+  if (!S.vendors.length) return welcome();
+  if (!ISS.d) ISS.d = newIssueDraft('');
+  const d = ISS.d; const tt = issueTotals(d);
+  const cust = S.vendors.filter(v => !isIC(v) && v.active !== false).sort((a, b) => a.name.localeCompare(b.name));
+  const f = (k, label, extra = '', full = false) => `<div class="f ${full ? 'full' : ''}"><label>${label}</label><input class="inp is" data-k="${k}" value="${esc(d[k] ?? '')}" ${extra}></div>`;
+  let h = pageHead(t('issue'), t('issueSub'), `<button class="btn" data-act="issNew">↺ ${LANG === 'ko' ? '새로 작성' : 'New'}</button><button class="btn" data-act="issPreview">👁 ${t('preview')}</button><button class="btn pri ed" data-act="issSave">⤓ ${t('issueSave')}</button>`);
+  h += `<div class="row2" style="align-items:start"><div class="card"><div class="card-b"><div class="form">
+    <div class="f full"><label>${t('vendor')} *</label><select class="inp" id="isV"><option value="">${t('selVendor')}</option>${cust.map(v => `<option value="${v.id}" ${d.vendorId === v.id ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></div>
+    ${f('invoiceDate', t('invDate') + ' *', 'type="date"')}
+    <div class="f"><label>${t('invNo')} *</label><div style="display:flex;gap:6px"><input class="inp is" data-k="invoiceNo" value="${esc(d.invoiceNo)}" placeholder="JAIN-YYMMDD.." style="flex:1"><button class="btn sm" data-act="issSuggest" title="auto">${LANG === 'ko' ? '자동' : 'Auto'}</button></div></div>
+    ${f('consName', t('billName') + ' *', '', true)}${f('consAddr', t('billAddr'), '', true)}
+    ${f('poNo', t('poNo'))}${f('notify', t('notify'))}${f('loading', t('loadSite'))}${f('discharge', t('discharge'))}${f('carrier', t('carrier'))}${f('remarks', t('remarks'))}
+  </div></div></div>
+  <div class="card"><div class="card-h"><h3>${t('total')}</h3></div><div class="card-b">
+    <div class="pill-sum" style="font-size:14px"><span>${t('total')} <b>${money(tt.total)}</b></span><span>${t('amount')} (AR) <b>${money(tt.invoiceAmt)}</b></span>${d.deposit50 ? `<span>${t('salesAmt')} <b>${money(tt.total)}</b></span>` : ''}</div>
+    <label class="chk" style="margin-top:12px"><input type="checkbox" id="isDep" ${d.deposit50 ? 'checked' : ''}> ${t('deposit50')}</label><div class="hint muted" style="font-size:11px;margin-top:4px">${t('deposit50Hint')}</div>
+    <div class="muted" style="font-size:12px;margin-top:14px">${LANG === 'ko' ? '금액 = ROUND(수량 × 단가, 2). 고객 결제조건으로 입금기한이 자동 계산됩니다.' : 'Amount = ROUND(qty × price, 2). Due date follows customer terms.'}</div>
+  </div></div></div>`;
+  h += `<div class="card"><div class="card-h"><h3>${t('items')}</h3><span class="sp"></span><button class="btn sm" data-act="issAddLine">＋ ${t('addLine')}</button></div><div class="card-b"><div class="tbl-wrap"><table class="t alloc"><thead><tr><th>${t('prodName')}</th><th>${t('descr')}</th><th>${t('descr2')}</th><th class="num">${t('qty')}</th><th>${t('unit')}</th><th>${t('pack')}</th><th class="num">${t('unitPrice')}</th><th class="num">${t('amount')}</th><th>${t('lineNote')}</th><th></th></tr></thead><tbody>
+    ${d.lines.map((l, k) => `<tr>
+      <td><input class="inp il" data-k="${k}" data-f="name" value="${esc(l.name)}" placeholder="HF 49%" style="width:90px"></td>
+      <td><input class="inp il" data-k="${k}" data-f="desc" value="${esc(l.desc)}" placeholder="Hydrofluoric Acid (HF) 49%" style="width:190px"></td>
+      <td><input class="inp il" data-k="${k}" data-f="desc2" value="${esc(l.desc2)}" placeholder="ISO Tank JNFU…" style="width:150px"></td>
+      <td class="num"><input class="inp il" data-k="${k}" data-f="qty" type="number" step="any" value="${l.qty}" style="width:90px"></td>
+      <td><input class="inp il" data-k="${k}" data-f="unit" value="${esc(l.unit)}" style="width:50px"></td>
+      <td><input class="inp il" data-k="${k}" data-f="pack" value="${esc(l.pack)}" style="width:55px"></td>
+      <td class="num"><input class="inp il" data-k="${k}" data-f="price" type="number" step="any" value="${l.price}" style="width:80px"></td>
+      <td class="num">${money(r2((+l.qty || 0) * (+l.price || 0)))}</td>
+      <td><input class="inp il" data-k="${k}" data-f="note" value="${esc(l.note)}" placeholder="Shuttle MM/DD/YYYY BOL:…" style="width:190px"></td>
+      <td>${d.lines.length > 1 ? `<button class="btn sm ghost" data-act="issDelLine" data-k="${k}">✕</button>` : ''}</td></tr>`).join('')}
+  </tbody></table></div></div></div>`;
+  setTimeout(() => {
+    $$('.is').forEach(el => el.onchange = () => { ISS.d[el.dataset.k] = el.value; if (el.dataset.k === 'invoiceDate') render(); });
+    $$('.il').forEach(el => el.onchange = () => { const l = ISS.d.lines[el.dataset.k]; l[el.dataset.f] = el.value; if (['name', 'desc'].includes(el.dataset.f) && !l.price) prefillLine(l); render(); });
+    $('#isDep').onchange = e => { ISS.d.deposit50 = e.target.checked; render(); };
+    $('#isV').onchange = e => { const v = vendorById(e.target.value); Object.assign(ISS.d, { vendorId: e.target.value, consName: v?.billName || v?.name || '', consAddr: v?.billAddr || '', discharge: v?.discharge || '', poNo: v?.lastPo || ISS.d.poNo }); render(); };
+  });
+  return h;
+}
+/* fill description/price from the latest issued invoice with the same product for this customer */
+function prefillLine(l) {
+  const key = normKey(l.name); if (!key) return;
+  const prev = S.invoices.filter(i => i.issue && i.vendorId === ISS.d.vendorId).sort((a, b) => (b.invoiceDate || '').localeCompare(a.invoiceDate || ''))
+    .flatMap(i => i.issue.lines || []).find(x => normKey(x.name) === key);
+  if (prev) Object.assign(l, { desc: l.desc || prev.desc, unit: prev.unit || l.unit, pack: prev.pack ?? l.pack, price: prev.price });
+}
+ACT.issNew = () => { ISS.d = newIssueDraft(ISS.d?.vendorId || ''); render(); };
+ACT.issAddLine = () => { ISS.d.lines.push({ name: '', desc: '', desc2: '', qty: '', unit: 'Kg', pack: 'ISO', price: '', note: '' }); render(); };
+ACT.issDelLine = el => { ISS.d.lines.splice(+el.dataset.k, 1); render(); };
+ACT.issSuggest = () => { ISS.d.invoiceNo = suggestInvNo(ISS.d); render(); };
+function issueCheck(d, exceptId) {
+  if (!d.vendorId || !d.invoiceDate || !d.consName) return t('required');
+  if (!d.invoiceNo) d.invoiceNo = suggestInvNo(d);
+  if (S.invoices.some(i => i.id !== exceptId && normKey(i.invoiceNo) === normKey(d.invoiceNo))) return t('invNoDup');
+  if (!issueTotals(d).lines.some(l => l.amount)) return t('needLine');
+  return '';
+}
+ACT.issPreview = async () => {
+  const d = ISS.d; if (!d.invoiceNo) d.invoiceNo = suggestInvNo(d);
+  try { const { doc } = await buildInvoicePdf(d); window.open(doc.output('bloburl'), '_blank'); } catch (e) { toast(e.message, true); }
+};
+ACT.issSave = async el => {
+  const d = ISS.d; const err = issueCheck(d); if (err) return toast(err, true);
+  el.disabled = true;
+  try {
+    const { doc, total, invoiceAmt, lines } = await buildInvoicePdf(d);
+    const issue = JSON.parse(JSON.stringify({ ...d, lines: d.lines.filter(l => l.name || l.desc || +l.qty) }));
+    const inv = { vendorId: d.vendorId, invoiceNo: d.invoiceNo, invoiceDate: d.invoiceDate, dueDate: '', amount: invoiceAmt, salesAmount: d.deposit50 ? total : null,
+      memo: lines.map(l => `${l.name} ${fmtUSD(l.qty, 0)} ${l.unit}`.trim()).join(' + ').slice(0, 80), note: d.remarks || '', poNo: d.poNo || '',
+      product: productOf(lines.map(l => l.name + ' ' + l.desc).join(' ')), lines: lines.length > 1 ? lines.map(l => ({ memo: `${l.name} ${fmtUSD(l.qty, 0)} ${l.unit}`, amount: d.deposit50 ? r2(l.amount / 2) : l.amount, product: productOf(l.name + ' ' + l.desc) })) : undefined,
+      source: 'issued', issue, needsReview: false, reviewFlags: [], seq: Date.now() };
+    if (!inv.lines) delete inv.lines;
+    await Store.put('invoices', inv);
+    const v = vendorById(d.vendorId);
+    if (v && (v.billName !== d.consName || v.billAddr !== d.consAddr || v.discharge !== d.discharge || v.lastPo !== d.poNo)) await Store.put('vendors', { ...v, billName: d.consName, billAddr: d.consAddr, discharge: d.discharge, lastPo: d.poNo });
+    doc.save(`${d.invoiceNo}.pdf`);
+    toast(`${t('issued')} · ${d.invoiceNo} · ${money(invoiceAmt)}`);
+    ISS.d = newIssueDraft(d.vendorId); render();
+  } catch (e) { toast(e.message, true); }
+  el.disabled = false;
+};
+ACT.reprint = async el => { const i = S.invoices.find(x => x.id === el.dataset.id); if (!i || !i.issue) return; try { const { doc } = await buildInvoicePdf({ ...i.issue, invoiceNo: i.invoiceNo, invoiceDate: i.invoiceDate }); doc.save(`${i.invoiceNo}.pdf`); } catch (e) { toast(e.message, true); } };
+
+/* ---------- settings: template ---------- */
+function tplSection() {
+  const T = invTpl(); const dis = can('admin') ? '' : 'disabled';
+  const fi = (k, l, full) => `<div class="f ${full ? 'full' : ''}"><label>${l}</label><input class="inp tp" data-k="${k}" value="${esc(T[k] || '')}" ${dis}></div>`;
+  return `<div class="card set-sec"><div class="card-h"><h3>${t('tplSec')}</h3></div><div class="card-b"><div class="form">
+    ${fi('shipper', t('shipper'))}${fi('signedBy', t('signedBy'))}${fi('shipperAddr', t('shipperAddr'), true)}${fi('telLine', t('telLine'), true)}
+    ${fi('beneficiary', t('beneficiary'))}${fi('bankAcct', t('bankAcct'))}${fi('swift', t('swift'))}${fi('aba', t('aba'))}${fi('bankAddr', t('bankAddr'), true)}${fi('loading', t('loadSite'), true)}
+    <div class="f"><label>${t('logo')}</label><div style="display:flex;gap:8px;align-items:center"><img src="${T.logo}" style="height:22px;border:1px solid var(--line)"><input type="file" accept="image/png,image/jpeg" class="tpImg adm" data-k="logo"></div></div>
+    <div class="f"><label>${t('seal')}</label><div style="display:flex;gap:8px;align-items:center"><img src="${T.seal}" style="height:40px;border:1px solid var(--line)"><input type="file" accept="image/png,image/jpeg" class="tpImg adm" data-k="seal"></div></div>
+    <div class="f full adm" style="flex-direction:row;justify-content:flex-end;gap:8px"><button class="btn" data-act="tplTest">👁 ${t('preview')}</button><button class="btn pri" data-act="tplSave">${t('save')}</button></div>
+  </div></div></div>`;
+}
+ACT.tplSave = async () => { if (!can('admin')) return toast(t('noPerm'), true); return tplSaveImpl(); };
+const tplSaveImpl = async () => { const T = invTpl(); $$('.tp').forEach(el => T[el.dataset.k] = el.value.trim()); for (const el of $$('.tpImg')) if (el.files[0]) T[el.dataset.k] = 'data:' + el.files[0].type + ';base64,' + await fileToB64(el.files[0]); await setShared('invTpl', T); toast(t('savedT')); render(); };
+ACT.tplTest = async () => { const { doc } = await buildInvoicePdf({ invoiceNo: 'JAIN-SAMPLE', invoiceDate: todayStr(), consName: 'Sample Customer Inc.', consAddr: '123 Sample Rd, Atlanta, GA 30000', poNo: '0000000000', discharge: 'Atlanta, Georgia', lines: [{ name: 'HF 49%', desc: 'Hydrofluoric Acid (HF) 49%', desc2: 'ISO Tank SAMPLE', qty: 18570, unit: 'Kg', pack: 'ISO', price: 2.6, note: 'Shuttle 10/02/2026 BOL:SAMPLE' }] }); window.open(doc.output('bloburl'), '_blank'); };
+
+/* ---------- Excel invoice source → text for the rule parser ---------- */
+async function xlsxToText(file) {
+  const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: false, cellNF: true });
+  const out = [];
+  for (const n of wb.SheetNames.slice(0, 3)) {
+    const ws = wb.Sheets[n]; if (!ws['!ref']) continue;
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '', blankrows: false });
+    for (const r of rows) { const line = r.map(c => String(c).replace(/\s+/g, ' ').trim()).filter(Boolean).join('   '); if (line) out.push(line); }
+    out.push('---');
+  }
+  return out.join('\n');
+}
 ACT.go = el => {
   const [view, f] = el.dataset.go.split('|');
   if (view === 'invoices') { Object.assign(UI.inv, { q: '', vendor: '', from: '', to: '', bucket: '', status: 'unpaid' }); if (f === 'period') { const r = periodRange(); Object.assign(UI.inv, { status: 'all', from: r.from, to: r.to }); } else if (f === 'overdue') UI.inv.status = 'overdue'; else if (f === 'review') UI.inv.status = 'review'; else if (f === 'due7' || f === 'due30') UI.inv.status = f; else if (f && f.startsWith('bucket')) UI.inv.bucket = f.slice(6); }
@@ -1365,7 +1616,7 @@ function invoiceModal(inv, preset = {}) {
     <div class="f full" id="iDupBox"></div>
   </div>
   ${!isNew ? `<div style="margin-top:16px"><div style="font-weight:600;font-size:13px;margin-bottom:6px">${t('payHistory')}</div>${pays.length ? `<table class="t"><thead><tr><th>${t('payDate')}</th><th>${t('method')}</th><th class="num">${t('applied')}</th><th></th></tr></thead><tbody>${pays.map(p => `<tr><td>${p.date || '—'}</td><td>${p.method ? t('methods_' + p.method) : ''}</td><td class="num">${money((p.allocations.find(a => a.invoiceId === inv.id) || {}).amount)}</td><td><button class="btn sm" data-act="editPay" data-id="${p.id}">${t('edit')}</button></td></tr>`).join('')}</tbody></table><div class="pill-sum"><span>${t('paid')} <b>${money(x.applied)}</b></span><span>${t('open')} <b>${money(x.open)}</b></span></div>` : `<div class="muted">${t('noPay')}</div>`}</div>` : ''}`;
-  const foot = `${!isNew ? `<button class="btn danger ed" data-act="delInv" data-id="${inv.id}">${t('del')}</button>` : ''}<span class="sp"></span><button class="btn" data-act="closeModal">${t('cancel')}</button>${!isNew && x && x.open > 0.004 ? `<button class="btn ed" data-act="payInv" data-id="${inv.id}">${t('recordPayment')}</button>` : ''}<button class="btn pri ed" id="iSave">${t('save')}</button>`;
+  const foot = `${!isNew ? `<button class="btn danger ed" data-act="delInv" data-id="${inv.id}">${t('del')}</button>` : ''}${inv.issue ? ` <button class="btn" data-act="reprint" data-id="${inv.id}">🧾 ${t('reprint')}</button>` : ''}<span class="sp"></span><button class="btn" data-act="closeModal">${t('cancel')}</button>${!isNew && x && x.open > 0.004 ? `<button class="btn ed" data-act="payInv" data-id="${inv.id}">${t('recordPayment')}</button>` : ''}<button class="btn pri ed" id="iSave">${t('save')}</button>`;
   openModal({ title: isNew ? t('newInvoice') : `${t('invoiceDetail')} · ${esc(inv.invoiceNo || '')}`, body, foot });
   const upd = () => {
     const v = vendorById($('#iV').value); const d = $('#iDate').value;
@@ -1569,6 +1820,7 @@ function vSettings() {
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button class="btn" data-act="exportXlsx">⤓ ${t('exportXlsx')}</button><button class="btn" id="sBackup">⤓ ${t('backup')}</button></div>
     <div class="adm" style="display:flex;gap:8px;margin-top:10px"><input type="file" id="sRestoreF" accept=".json" style="display:none"><button class="btn" onclick="document.getElementById('sRestoreF').click()">⤒ ${t('restore')}</button><span style="flex:1"></span><button class="btn danger" id="sReset">${t('resetAll')}</button></div>
     <div class="muted" style="font-size:12px;margin-top:12px">${CLOUD ? t('online') : t('local')} · ${t('countsLine', { v: S.vendors.length, i: S.invoices.length, p: S.payments.length })}</div>`);
+  h += tplSection();
   h += `</div></div>`;
   setTimeout(() => {
     const on = (id, ev, fn) => { const el = $('#' + id); if (el) el[ev] = fn; };
@@ -1854,13 +2106,15 @@ function regItem(id) { return REG.items.find(x => x.id === id); }
 function vRegister() {
   const it = regItem(REG.sel);
   let h = pageHead(t('register'), '', `<button class="btn" data-act="clearDone">${t('clearDone')}</button><button class="btn ed" data-act="newInv">✎ ${t('manualEntry')}</button>`);
-  h += `<label class="drop" id="drop"><input type="file" id="regFiles" multiple accept=".pdf,image/*" style="display:none"><div style="font-size:26px">⤒</div><b>${t('dropHere')}</b><div style="font-size:12px;margin-top:4px">${t('dropSub')}</div></label>`;
+  h += `<label class="drop" id="drop"><input type="file" id="regFiles" multiple accept=".pdf,image/*,.xlsx,.xls" style="display:none"><div style="font-size:26px">⤒</div><b>${t('dropHere')}</b><div style="font-size:12px;margin-top:4px">${t('dropSub')}</div></label>`;
   if (!REG.items.length) return h;
   const stTxt = x => x.status === 'parsing' ? `<span class="spin"></span> ${t(x.phase === 'ocr' ? 'ocr' : 'parsing')}` : x.status === 'ready' ? `<span class="b open">${t('ready')}</span>` : x.status === 'saved' ? `<span class="b paid">${t('saved')}</span>` : x.status === 'skipped' ? `<span class="b ic">${t('skipped')}</span>` : `<span class="b overdue">${t('failed')}</span>`;
   h += `<div class="reg"><div class="card queue">${REG.items.map(x => `<div class="qi ${x.id === REG.sel ? 'on' : ''}" data-act="regSel" data-id="${x.id}"><div class="fn" title="${esc(x.file.name)}">${esc(x.file.name)}</div><div class="st">${stTxt(x)} ${x.fields.vendorId ? `<span class="muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(vName(x.fields.vendorId))}</span>` : ''}</div></div>`).join('')}</div>`;
   if (it) {
-    const isImg = /^image\//.test(it.file.type);
+    const isImg = /^image\//.test(it.file.type), isXl = /\.xlsx?$/i.test(it.file.name);
+    if (isXl) { if (it.xlHtml == null) { it.xlHtml = ''; it.file.arrayBuffer().then(b => { const wb = XLSX.read(b, { type: 'array' }); it.xlHtml = XLSX.utils.sheet_to_html(wb.Sheets[wb.SheetNames[0]], { header: '', footer: '' }); if (location.hash === '#register' && REG.sel === it.id) render(); }); } }
     const imgs = isImg ? [it.url] : (it.pageImgs || []);
+    if (isXl) { h += `<div class="card preview"><div class="imgwrap" style="align-items:stretch;background:#fff"><div class="xlprev" style="font-size:11px">${it.xlHtml || '<div class="empty"><span class="spin"></span></div>'}</div></div></div><div class="card regform"><div class="card-b">${regForm(it)}</div></div></div>`; return h; }
     h += `<div class="card preview"><div class="imgwrap"><div class="pv-bar"><button class="btn sm" data-act="regOpen">↗ ${LANG === 'ko' ? '새 창에서 열기' : 'Open in new tab'}</button></div>${imgs.length ? imgs.map(s => `<img src="${s}">`).join('') : `<div class="empty"><span class="spin"></span></div>`}${it.pageTotal > imgs.length && !isImg ? `<div class="muted">${t('morePages', { n: it.pageTotal - imgs.length })}</div>` : ''}</div></div>`;
     if (!isImg && !it.pageImgs && !it.pvBusy) { it.pvBusy = true; renderPdfPages(it.file).then(r => { it.pageImgs = r.imgs; it.pageTotal = r.total; }).catch(() => { it.pageImgs = []; }).finally(() => { it.pvBusy = false; if (location.hash === '#register' && REG.sel === it.id) render(); }); }
     h += `<div class="card regform"><div class="card-b">${regForm(it)}</div></div>`;
@@ -1895,7 +2149,7 @@ function regForm(it) {
     <span style="flex:1"></span>
     ${it.status !== 'saved' ? `<button class="btn ed" data-act="regSkip">${t('skip')}</button><button class="btn pri ed" data-act="regSave">${t('saveNext')}</button>` : ''}
   </div>
-  <div class="muted" style="font-size:11px;margin-top:10px">${t('parsedBy')}: ${it.method === 'ai' ? t('ai') : it.method === 'ocr' ? t('ocrRules') : t('rules')} · ${conf('hi')} ${t('conf_hi')} ${conf('mid')} ${t('conf_mid')} ${conf('lo')} ${t('conf_lo')}</div>
+  <div class="muted" style="font-size:11px;margin-top:10px">${t('parsedBy')}: ${it.method === 'ai' ? t('ai') : it.method === 'ocr' ? t('ocrRules') : it.method === 'excel' ? 'Excel' : t('rules')} · ${conf('hi')} ${t('conf_hi')} ${conf('mid')} ${t('conf_mid')} ${conf('lo')} ${t('conf_lo')}</div>
   <details class="raw" style="margin-top:10px"><summary>${t('rawText')}</summary><pre>${esc(it.text || '')}</pre></details>`;
 }
 function bindRegister() {
@@ -1913,7 +2167,7 @@ function bindRegister() {
   }));
 }
 function addRegFiles(files) {
-  files = files.filter(f => /pdf|image/.test(f.type) || /\.(pdf|png|jpe?g|webp)$/i.test(f.name));
+  files = files.filter(f => /pdf|image/.test(f.type) || /\.(pdf|png|jpe?g|webp|xlsx|xls)$/i.test(f.name));
   for (const file of files) REG.items.push({ id: uid(), file, url: URL.createObjectURL(file), status: 'parsing', fields: { conf: {} }, text: '' });
   if (!REG.sel && REG.items.length) REG.sel = REG.items[0].id;
   render(); processQueue();
@@ -1972,7 +2226,7 @@ ACT.regSave = async el => {
 
 /* ---------- router / nav ---------- */
 const NAV = [
-  ['dashboard', '◧'], ['sales', '📈'], ['summary', '▤'], ['invoices', '≡'], ['register', '⤒', 'edit'], ['payments', '💳'], ['vendors', '◎'], ['users', '👥', 'admin', true], ['settings', '⚙'],
+  ['dashboard', '◧'], ['sales', '📈'], ['summary', '▤'], ['invoices', '≡'], ['register', '⤒', 'edit'], ['issue', '🧾', 'edit'], ['payments', '💳'], ['vendors', '◎'], ['users', '👥', 'admin', true], ['settings', '⚙'],
 ];
 function renderNav() {
   const cur = (location.hash.slice(1) || 'dashboard').split('/')[0];
@@ -1993,13 +2247,13 @@ function render(keepFocus) {
   if (CLOUD && AUTH.status !== 'ok') return;
   document.body.classList.toggle('ro', !can('edit')); document.body.classList.toggle('isadm', can('admin'));
   const noPerm = () => `<div class="errbox">${t('noPerm')}</div>`;
-  const fn = { dashboard: vDashboard, sales: vSales, summary: vSummary, invoices: vInvoices, register: can('edit') ? vRegister : noPerm, payments: vPayments, vendors: vVendors, vendor: () => vVendor(arg), settings: vSettings, users: CLOUD ? vUsers : vDashboard }[view] || vDashboard;
+  const fn = { dashboard: vDashboard, sales: vSales, summary: vSummary, invoices: vInvoices, register: can('edit') ? vRegister : noPerm, issue: can('edit') ? vIssue : noPerm, payments: vPayments, vendors: vVendors, vendor: () => vVendor(arg), settings: vSettings, users: CLOUD ? vUsers : vDashboard }[view] || vDashboard;
   $('#view').innerHTML = fn();
   bindAsOf(); bindRegister();
   if (focusId && $('#' + focusId)) { const el = $('#' + focusId); el.focus(); try { el.setSelectionRange(caret, caret); } catch { } }
 }
 function setLang(l) { LANG = l; Pref.set('lang', l); document.documentElement.lang = l; render(); }
-const EDIT_ACTS = new Set(['newInv', 'payFor', 'payInv', 'newPay', 'newVendor', 'delInv', 'delPay', 'delVendor', 'regNewVendor', 'regSave', 'regAI', 'dep50', 'addUser', 'editUser', 'delUser', 'approveReq', 'dismissReq']);
+const EDIT_ACTS = new Set(['newInv', 'payFor', 'payInv', 'newPay', 'newVendor', 'delInv', 'delPay', 'delVendor', 'regNewVendor', 'regSave', 'regAI', 'dep50', 'issSave', 'addUser', 'editUser', 'delUser', 'approveReq', 'dismissReq']);
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]'); if (!el || !ACT[el.dataset.act]) return;
   e.preventDefault();
