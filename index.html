@@ -1,8 +1,5 @@
 <!doctype html>
-<!--
-  © 2025–2026 Young Tai Kang. All rights reserved.
-  Unauthorized use, copying, modification, or distribution without the written permission of Young Tai Kang is prohibited.
--->
+<!-- © 2025–2026 Young Tai Kang. All rights reserved. Unauthorized use, copying, modification, or distribution without the written permission of Young Tai Kang is prohibited. -->
 <html lang="ko">
 <head>
 <meta charset="utf-8">
@@ -189,7 +186,7 @@ details.raw pre{white-space:pre-wrap;font-size:11px;background:var(--surface-2);
 .spin{width:12px;height:12px;border:2px solid #cbd5e1;border-top-color:var(--accent);border-radius:50%;display:inline-block;animation:sp 1s linear infinite}
 @keyframes sp{to{transform:rotate(360deg)}}
 .vhead{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
-.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:14px}
+.tabs{display:flex;gap:4px;align-items:flex-end;border-bottom:1px solid var(--line);margin-bottom:14px}
 .tabs button{border:0;background:none;padding:9px 14px;cursor:pointer;color:var(--text-2);font-weight:500;border-bottom:2px solid transparent;margin-bottom:-1px}
 .tabs button.on{color:var(--accent-d);border-color:var(--accent)}
 .alloc td .inp{width:110px;text-align:right;padding:4px 8px}
@@ -1808,7 +1805,7 @@ function vVendor(id) {
     `<label class="chk">${t('asOf')} <input type="date" class="inp" id="asOf" value="${UI.asOf}"></label><button class="btn ed" data-act="newPay" data-vendor="${id}">💳 ${t('recordPayment')}</button><button class="btn pri ed" data-act="newInv" data-vendor="${id}">＋ ${t('newInvoice')}</button>`);
   const kp = (l, val, cls = '') => `<div class="card kpi ${cls}" style="cursor:default"><div class="l">${l}</div><div class="v">${val}</div></div>`;
   h += `<div class="vhead">${kp(t('balance'), money(r.balance))}${kp(t('overdue'), money(r.overdue), r.overdue > 0 ? 'bad' : '')}${kp(t('openCount'), r.open || 0)}${kp(t('unapplied'), money(r.credit || 0))}</div>`;
-  h += `<div class="tabs"><button class="${UI.vendorTab === 'ledger' ? 'on' : ''}" data-act="vtab" data-t="ledger">${t('ledger')}</button><button class="${UI.vendorTab === 'set' ? 'on' : ''}" data-act="vtab" data-t="set">${t('vendorInfo')}</button></div>`;
+  h += `<div class="tabs"><button class="${UI.vendorTab === 'ledger' ? 'on' : ''}" data-act="vtab" data-t="ledger">${t('ledger')}</button><button class="${UI.vendorTab === 'set' ? 'on' : ''}" data-act="vtab" data-t="set">${t('vendorInfo')}</button>${UI.vendorTab !== 'set' ? `<span style="flex:1"></span><label class="chk" style="align-self:center"><input type="checkbox" id="ledHide" ${UI.ledHidePaid ? 'checked' : ''}> ${t('hidePaid')}</label>` : ''}</div>`;
   if (UI.vendorTab === 'set') {
     h += `<div class="card"><div class="card-b">${vendorForm(v)}<div style="display:flex;gap:8px;margin-top:16px"><button class="btn danger ed" data-act="delVendor" data-id="${id}">${t('del')}</button><span style="flex:1"></span><button class="btn pri ed" id="vfSave">${t('save')}</button></div></div></div>`;
     setTimeout(() => { $('#vfSave').onclick = async () => { const d = readVendorForm(v); if (!d) return; await Store.put('vendors', d); toast(t('savedT')); render(); }; });
@@ -1817,16 +1814,24 @@ function vVendor(id) {
     S.invoices.filter(i => i.vendorId === id).forEach(i => ev.push({ d: i.invoiceDate || '', k: 0, s: i.seq || 0, i }));
     S.payments.filter(p => p.vendorId === id).forEach(p => ev.push({ d: p.date || '', k: 1, s: 0, p }));
     ev.sort((a, b) => (a.d || '9999').localeCompare(b.d || '9999') || a.k - b.k || a.s - b.s);
-    let bal = 0;
+    let bal = 0, hidden = 0;
+    const paidInv = id => { const i = S.invoices.find(z => z.id === id); return i && invStatus(i, c.inv.get(id)) === 'paid'; };
+    const hideRow = e => UI.ledHidePaid && (e.i ? invStatus(e.i, c.inv.get(e.i.id)) === 'paid'
+      : (e.p.allocations || []).length > 0 && Math.abs(payUnapplied(e.p)) < 0.005 && e.p.allocations.every(a => paidInv(a.invoiceId)));
     const rows = ev.map(e => {
+      if (hideRow(e)) { bal = e.i ? r2(bal + (+e.i.amount || 0)) : r2(bal - (+e.p.amount || 0) - (+e.p.fee || 0)); hidden++; return ''; }
       if (e.i) { bal = r2(bal + (+e.i.amount || 0)); const x = c.inv.get(e.i.id); const st = invStatus(e.i, x); return `<tr class="click" data-act="editInv" data-id="${e.i.id}"><td>${e.d || '—'}</td><td><span class="b open">${t('charge')}</span></td><td class="wrap">${esc(e.i.invoiceNo)}</td><td class="wrap muted">${esc(e.i.memo)}</td><td class="num">${money(e.i.amount)}</td><td class="num"></td><td class="num">${money(bal)}</td><td>${badge(st)}${e.i.needsReview ? ' <span class="b review">!</span>' : ''}</td></tr>`; }
       bal = r2(bal - (+e.p.amount || 0) - (+e.p.fee || 0)); const invs = (e.p.allocations || []).map(a => S.invoices.find(i => i.id === a.invoiceId)?.invoiceNo).filter(Boolean);
       return `<tr class="click" data-act="editPay" data-id="${e.p.id}"><td>${e.d || '<span class="b review">' + t('noDate') + '</span>'}</td><td><span class="b paid">${t('payment')}</span></td><td class="wrap muted">${esc(invs.join(', ') || e.p.ref || '')}</td><td class="wrap muted">${esc([e.p.method ? t('methods_' + e.p.method) : '', e.p.memo, e.p.fee ? `${t('fee')} ${money(e.p.fee)}` : ''].filter(Boolean).join(' · '))}</td><td class="num"></td><td class="num">${money(e.p.amount)}</td><td class="num">${money(bal)}</td><td>${e.p.needsReview ? '<span class="b review">!</span>' : ''}</td></tr>`;
     }).join('');
     h += `<div class="card"><div class="tbl-wrap tbl-scroll"><table class="t"><thead><tr><th>${t('date')}</th><th>${t('type')}</th><th>${t('invNo')}</th><th>${t('memo')}</th><th class="num">${t('charge')}</th><th class="num">${t('payment')}</th><th class="num">${t('balance')}</th><th>${t('status')}</th></tr></thead><tbody>${rows || `<tr><td colspan="8" class="empty">${t('noData')}</td></tr>`}</tbody></table></div></div>`;
+    if (hidden) h += `<div class="muted" style="font-size:12px;margin-top:8px">${t('hiddenPaid', { n: hidden })}</div>`;
+    setTimeout(() => { const hb = $('#ledHide'); if (hb) hb.onchange = () => { UI.ledHidePaid = hb.checked; Pref.set('ledHidePaid', hb.checked); render(); }; });
   }
   return h;
 }
+Object.assign(L, { hidePaid: ['Hide paid', '입금완료 숨기기'], hiddenPaid: ['{n} paid rows hidden (invoices fully received and their receipts). Balance column still includes them.', '입금완료 {n}행 숨김 (완납 인보이스와 그 입금). 잔액 열은 숨긴 행까지 포함한 누계입니다.'] });
+UI.ledHidePaid = Pref.get('ledHidePaid', true);
 ACT.vtab = el => { UI.vendorTab = el.dataset.t; render(); };
 ACT.delVendor = async el => {
   const id = el.dataset.id; if (S.invoices.some(i => i.vendorId === id) || S.payments.some(p => p.vendorId === id)) return toast(t('hasInvoices'), true);
@@ -2322,7 +2327,5 @@ function langPicker() {
 }
 
 </script>
-<style>.ytk-copyright{text-align:center;font-size:11px;line-height:1.4;color:#8a8f98;padding:10px 12px;font-family:inherit}@media print{.ytk-copyright{display:none}}</style>
-<div class="ytk-copyright">© 2025–2026 Young Tai Kang. All rights reserved. Unauthorized use, copying, modification, or distribution without the written permission of Young Tai Kang is prohibited.</div>
 </body>
 </html>
