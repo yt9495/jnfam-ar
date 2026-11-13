@@ -1822,7 +1822,7 @@ function vVendor(id) {
     // previous balance + charge - receipt = balance, and the last row equals the customer balance.
     const delta = e => e.i ? (+e.i.amount || 0) : -(+e.p.amount || 0) - (+e.p.fee || 0);
     ev.forEach(e => { if (hideRow(e)) { bal = r2(bal + delta(e)); hidden++; } });
-    const carry = (hidden && Math.abs(bal) >= 0.005) ? `<tr><td>—</td><td><span class="b">${t('carryHidden')}</span></td><td class="wrap muted" colspan="2">${t('carryHiddenNote', { n: hidden })}</td><td class="num"></td><td class="num"></td><td class="num">${money(bal)}</td><td></td></tr>` : '';
+    const carry = (hidden && Math.abs(bal) >= 0.005) ? `<tr><td>—</td><td><span class="b">${t('carryHidden')}</span></td><td class="wrap muted" colspan="2">${t('carryHiddenNote', { n: hidden })}</td><td class="num"></td><td class="num"></td><td class="num">${money(bal)}</td><td>${centPays(id).length ? `<button class="btn sm ed" data-act="settleCents" data-vendor="${id}">${t('settleCents')}</button>` : ''}</td></tr>` : '';
     const rows = carry + ev.map(e => {
       if (hideRow(e)) return '';
       if (e.i) { bal = r2(bal + (+e.i.amount || 0)); const x = c.inv.get(e.i.id); const st = invStatus(e.i, x); return `<tr class="click" data-act="editInv" data-id="${e.i.id}"><td>${e.d || '—'}</td><td><span class="b open">${t('charge')}</span></td><td class="wrap">${esc(e.i.invoiceNo)}</td><td class="wrap muted">${esc(e.i.memo)}</td><td class="num">${money(e.i.amount)}</td><td class="num"></td><td class="num">${money(bal)}</td><td>${badge(st)}${e.i.needsReview ? ' <span class="b review">!</span>' : ''}</td></tr>`; }
@@ -1837,6 +1837,26 @@ function vVendor(id) {
 }
 Object.assign(L, { hidePaid: ['Hide paid', '입금완료 숨기기'], hiddenPaid: ['{n} paid rows hidden (invoices fully received and their receipts). Their net is shown as the first line.', '입금완료 {n}행 숨김 (완납 인보이스와 그 입금). 숨긴 행의 순액은 맨 위 "숨긴 행 합계" 줄에 반영됩니다.'], carryHidden: ['Hidden', '숨긴 행 합계'], carryHiddenNote: ['Net of {n} hidden paid rows', '숨긴 입금완료 {n}행의 순액 (센트 차이 등)'] });
 UI.ledHidePaid = Pref.get('ledHidePaid', true);
+/* receipts whose invoices are all paid but carry a cent-level (<$1) unapplied gap */
+function centPays(vid) {
+  const c = compute({ asOf: '9999-12-31' });
+  return S.payments.filter(p => p.vendorId === vid && (p.allocations || []).length && (() => { const u = Math.abs(payUnapplied(p)); return u > 0.004 && u < 1; })()
+    && p.allocations.every(a => { const i = S.invoices.find(z => z.id === a.invoiceId); return i && invStatus(i, c.inv.get(i.id)) === 'paid'; }));
+}
+ACT.settleCents = async el => {
+  const ps = centPays(el.dataset.vendor); if (!ps.length) return;
+  const tot = r2(ps.reduce((s, p) => s + payUnapplied(p), 0));
+  if (!confirm(t('settleCentsQ', { n: ps.length, a: money(tot) }))) return;
+  for (const p0 of ps) {
+    const p = JSON.parse(JSON.stringify(p0)); const u = payUnapplied(p);
+    p.fee = r2((+p.fee || 0) - u);
+    p.memo = [p.memo, (LANG === 'ko' ? '센트 차이 정리 ' : 'Cent gap settled ') + money(u)].filter(Boolean).join(' · ');
+    p.reviewFlags = (p.reviewFlags || []).filter(f => f !== 'unapplied'); p.needsReview = p.reviewFlags.length > 0;
+    await Store.put('payments', p);
+  }
+  toast(t('savedT')); render();
+};
+Object.assign(L, { settleCents: ['Settle cents', '센트 차이 완료 처리'], settleCentsQ: ['Write off {a} of cent-level unapplied on {n} receipts (recorded as adjustment)?', '입금 {n}건의 미배분 센트 차이 {a}를 조정액으로 정리하고 완료 처리합니다. 계속할까요?'] });
 ACT.vtab = el => { UI.vendorTab = el.dataset.t; render(); };
 ACT.delVendor = async el => {
   const id = el.dataset.id; if (S.invoices.some(i => i.vendorId === id) || S.payments.some(p => p.vendorId === id)) return toast(t('hasInvoices'), true);
