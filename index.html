@@ -1818,8 +1818,13 @@ function vVendor(id) {
     const paidInv = id => { const i = S.invoices.find(z => z.id === id); return i && invStatus(i, c.inv.get(id)) === 'paid'; };
     const hideRow = e => UI.ledHidePaid && (e.i ? invStatus(e.i, c.inv.get(e.i.id)) === 'paid'
       : (e.p.allocations || []).length > 0 && Math.abs(payUnapplied(e.p)) < 1 && e.p.allocations.every(a => paidInv(a.invoiceId)));   // <$1 unapplied = cent rounding gap
-    const rows = ev.map(e => {
-      if (hideRow(e)) { bal = e.i ? r2(bal + (+e.i.amount || 0)) : r2(bal - (+e.p.amount || 0) - (+e.p.fee || 0)); hidden++; return ''; }
+    // Hidden rows are rolled into one carry-forward line at the top, so every visible row reconciles:
+    // previous balance + charge - receipt = balance, and the last row equals the customer balance.
+    const delta = e => e.i ? (+e.i.amount || 0) : -(+e.p.amount || 0) - (+e.p.fee || 0);
+    ev.forEach(e => { if (hideRow(e)) { bal = r2(bal + delta(e)); hidden++; } });
+    const carry = (hidden && Math.abs(bal) >= 0.005) ? `<tr><td>—</td><td><span class="b">${t('carryHidden')}</span></td><td class="wrap muted" colspan="2">${t('carryHiddenNote', { n: hidden })}</td><td class="num"></td><td class="num"></td><td class="num">${money(bal)}</td><td></td></tr>` : '';
+    const rows = carry + ev.map(e => {
+      if (hideRow(e)) return '';
       if (e.i) { bal = r2(bal + (+e.i.amount || 0)); const x = c.inv.get(e.i.id); const st = invStatus(e.i, x); return `<tr class="click" data-act="editInv" data-id="${e.i.id}"><td>${e.d || '—'}</td><td><span class="b open">${t('charge')}</span></td><td class="wrap">${esc(e.i.invoiceNo)}</td><td class="wrap muted">${esc(e.i.memo)}</td><td class="num">${money(e.i.amount)}</td><td class="num"></td><td class="num">${money(bal)}</td><td>${badge(st)}${e.i.needsReview ? ' <span class="b review">!</span>' : ''}</td></tr>`; }
       bal = r2(bal - (+e.p.amount || 0) - (+e.p.fee || 0)); const invs = (e.p.allocations || []).map(a => S.invoices.find(i => i.id === a.invoiceId)?.invoiceNo).filter(Boolean);
       return `<tr class="click" data-act="editPay" data-id="${e.p.id}"><td>${e.d || '<span class="b review">' + t('noDate') + '</span>'}</td><td><span class="b paid">${t('payment')}</span></td><td class="wrap muted">${esc(invs.join(', ') || e.p.ref || '')}</td><td class="wrap muted">${esc([e.p.method ? t('methods_' + e.p.method) : '', e.p.memo, e.p.fee ? `${t('fee')} ${money(e.p.fee)}` : ''].filter(Boolean).join(' · '))}</td><td class="num"></td><td class="num">${money(e.p.amount)}</td><td class="num">${money(bal)}</td><td>${e.p.needsReview ? '<span class="b review">!</span>' : ''}</td></tr>`;
@@ -1830,7 +1835,7 @@ function vVendor(id) {
   }
   return h;
 }
-Object.assign(L, { hidePaid: ['Hide paid', '입금완료 숨기기'], hiddenPaid: ['{n} paid rows hidden (invoices fully received and their receipts). Balance column still includes them.', '입금완료 {n}행 숨김 (완납 인보이스와 그 입금). 잔액 열은 숨긴 행까지 포함한 누계입니다.'] });
+Object.assign(L, { hidePaid: ['Hide paid', '입금완료 숨기기'], hiddenPaid: ['{n} paid rows hidden (invoices fully received and their receipts). Their net is shown as the first line.', '입금완료 {n}행 숨김 (완납 인보이스와 그 입금). 숨긴 행의 순액은 맨 위 "숨긴 행 합계" 줄에 반영됩니다.'], carryHidden: ['Hidden', '숨긴 행 합계'], carryHiddenNote: ['Net of {n} hidden paid rows', '숨긴 입금완료 {n}행의 순액 (센트 차이 등)'] });
 UI.ledHidePaid = Pref.get('ledHidePaid', true);
 ACT.vtab = el => { UI.vendorTab = el.dataset.t; render(); };
 ACT.delVendor = async el => {
