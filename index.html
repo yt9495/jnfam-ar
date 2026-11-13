@@ -1817,7 +1817,7 @@ function vVendor(id) {
     let bal = 0, hidden = 0;
     const paidInv = id => { const i = S.invoices.find(z => z.id === id); return i && invStatus(i, c.inv.get(id)) === 'paid'; };
     const hideRow = e => UI.ledHidePaid && (e.i ? invStatus(e.i, c.inv.get(e.i.id)) === 'paid'
-      : (e.p.allocations || []).length > 0 && Math.abs(payUnapplied(e.p)) < 0.005 && e.p.allocations.every(a => paidInv(a.invoiceId)));
+      : (e.p.allocations || []).length > 0 && Math.abs(payUnapplied(e.p)) < 1 && e.p.allocations.every(a => paidInv(a.invoiceId)));   // <$1 unapplied = cent rounding gap
     const rows = ev.map(e => {
       if (hideRow(e)) { bal = e.i ? r2(bal + (+e.i.amount || 0)) : r2(bal - (+e.p.amount || 0) - (+e.p.fee || 0)); hidden++; return ''; }
       if (e.i) { bal = r2(bal + (+e.i.amount || 0)); const x = c.inv.get(e.i.id); const st = invStatus(e.i, x); return `<tr class="click" data-act="editInv" data-id="${e.i.id}"><td>${e.d || '—'}</td><td><span class="b open">${t('charge')}</span></td><td class="wrap">${esc(e.i.invoiceNo)}</td><td class="wrap muted">${esc(e.i.memo)}</td><td class="num">${money(e.i.amount)}</td><td class="num"></td><td class="num">${money(bal)}</td><td>${badge(st)}${e.i.needsReview ? ' <span class="b review">!</span>' : ''}</td></tr>`; }
