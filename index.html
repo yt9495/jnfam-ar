@@ -23,12 +23,23 @@ window.AR_CONFIG = {
   collectionPrefix: "ar_",
   msTenant: "9e2f9e87-0f8e-4b71-87d4-c0b36430e0a6",   // JNFAM (jnfam.onmicrosoft.com)
   adminEmails: ["ytkang@jnfam.onmicrosoft.com"],
-  aiProxyUrl: "https://script.google.com/macros/s/AKfycbx8dxsCZQZ3vSddbp6mOFshyG9eLC1Rg_xToz1E4OAiBbMXqyhUZXT0-chV4xn2yUnPcQ/exec"
+  aiProxyUrl: "https://script.google.com/macros/s/AKfycbx8dxsCZQZ3vSddbp6mOFshyG9eLC1Rg_xToz1E4OAiBbMXqyhUZXT0-chV4xn2yUnPcQ/exec",
+  /* Task Calendar (출하 → 청구 확인): read shipments from the Task Calendar Realtime DB */
+  taskCalendar: {
+    apiKey: "AIzaSyBkY5IGIPC0CsJB55hui7wqCffcCiS33NI",
+    authDomain: "jnfam-task-plan.firebaseapp.com",
+    databaseURL: "https://jnfam-task-plan-default-rtdb.firebaseio.com",
+    projectId: "jnfam-task-plan",
+    appId: "1:76859256151:web:c056fd641305780908e212"
+  },
+  shipStart: "2026-11-01",   // shipments before this date are not checked
+  shipLateDays: 3            // business days after shipment before an unbilled shipment turns red
 };
 </script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
@@ -348,13 +359,13 @@ const Pref = {
      put(col, doc) / putMany(col, docs) / del(col, id) / clear()
      putFile(id, blob, meta) / getFile(id) / delFile(id)
    Collections: vendors(=customers), invoices, payments(=receipts), meta            */
-const COLS = ['vendors', 'invoices', 'payments', 'meta'];
-const S = { vendors: [], invoices: [], payments: [], meta: [] };
+const COLS = ['vendors', 'invoices', 'payments', 'meta', 'shiplinks'];
+const S = { vendors: [], invoices: [], payments: [], meta: [], shiplinks: [] };
 const LocalStore = {
   db: null, mode: 'local',
   open() {
     return new Promise((res, rej) => {
-      const rq = indexedDB.open('jnfam-ar', 1);
+      const rq = indexedDB.open('jnfam-ar', 2);   // v2: + shiplinks
       rq.onupgradeneeded = () => { const db = rq.result; for (const c of [...COLS, 'files']) if (!db.objectStoreNames.contains(c)) db.createObjectStore(c, { keyPath: 'id' }); };
       rq.onsuccess = () => { this.db = rq.result; res(); };
       rq.onerror = () => rej(rq.error);
@@ -1094,6 +1105,7 @@ function vDashboard() {
     ${kpi(t('collectRate'), (rate * 100).toFixed(1) + '%', t('collectRateHint') + (review ? ` · <span style="color:var(--warn)">${t('needReview')} ${review}</span>` : ''))}
   </div>`;
   const undated = S.payments.filter(p => !p.date && c.vOK(p.vendorId));
+  h += shipDashBox();
   if (undated.length) h += `<div class="warnbox" style="cursor:pointer" data-act="go" data-go="payments|review">⚠ ${LANG === 'ko' ? `입금일이 없는 입금 ${undated.length}건 (${money(undated.reduce((s, p) => s + (+p.amount || 0), 0))}) — 기간 집계에 들어가지 않아 기초·기말이 맞지 않을 수 있습니다. 입금 내역에서 날짜를 넣어주세요.` : `${undated.length} receipts have no date (${money(undated.reduce((s, p) => s + (+p.amount || 0), 0))}) — they are left out of period totals. Add their dates under Receipts.`}</div>`;
   // customer roll-forward
   const rows = ps.rows.filter(x => [x.opening, x.invoiced, x.received, x.closing].some(v => Math.abs(v) > 0.004)).sort((a, b) => b.closing - a.closing || b.invoiced - a.invoiced);
@@ -1429,6 +1441,7 @@ function vIssue() {
   const cust = S.vendors.filter(v => !isIC(v) && v.active !== false).sort((a, b) => a.name.localeCompare(b.name));
   const f = (k, label, extra = '', full = false) => `<div class="f ${full ? 'full' : ''}"><label>${label}</label><input class="inp is" data-k="${k}" value="${esc(d[k] ?? '')}" ${extra}></div>`;
   let h = pageHead(t('issue'), t('issueSub'), `<button class="btn" data-act="issNew">↺ ${LANG === 'ko' ? '새로 작성' : 'New'}</button><button class="btn" data-act="issPreview">👁 ${t('preview')}</button><button class="btn pri ed" data-act="issSave">⤓ ${t('issueSave')}</button>`);
+  h += shipIssueBanner(d);
   h += `<div class="row2" style="align-items:start"><div class="card"><div class="card-b"><div class="form">
     <div class="f full"><label>${t('vendor')} *</label><select class="inp" id="isV"><option value="">${t('selVendor')}</option>${cust.map(v => `<option value="${v.id}" ${d.vendorId === v.id ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></div>
     ${f('invoiceDate', t('invDate') + ' *', 'type="date"')}
@@ -1496,6 +1509,7 @@ ACT.issSave = async el => {
       source: 'issued', issue, needsReview: false, reviewFlags: [], seq: Date.now() };
     if (!inv.lines) delete inv.lines;
     await Store.put('invoices', inv);
+    if (d.shipKeys && d.shipKeys.length) await linkShips(d.shipKeys, [inv.id]);
     const v = vendorById(d.vendorId);
     if (v && (v.billName !== d.consName || v.billAddr !== d.consAddr || v.discharge !== d.discharge || v.lastPo !== d.poNo)) await Store.put('vendors', { ...v, billName: d.consName, billAddr: d.consAddr, discharge: d.discharge, lastPo: d.poNo });
     doc.save(`${d.invoiceNo}.pdf`);
@@ -1666,14 +1680,19 @@ function invoiceModal(inv, preset = {}) {
     if (!doc.vendorId || !doc.invoiceDate || !$('#iAmt').value) return toast(t('required'), true);
     if ($('#iRev') && $('#iRev').checked) { doc.needsReview = false; doc.reviewFlags = []; }
     if (isNew) doc.seq = Date.now();
-    await Store.put('invoices', doc); closeModal(); toast(t('savedT')); render();
+    await Store.put('invoices', doc);
+    for (const l of S.shiplinks.filter(l => (l.invoiceIds || []).includes(doc.id))) pushTaskBadge(l.id);   // invoice no. may have changed
+    closeModal(); toast(t('savedT')); render();
   };
 }
 ACT.delInv = async el => {
   if (!confirm(t('confirmDel'))) return;
   const id = el.dataset.id; const inv = S.invoices.find(i => i.id === id);
   for (const p of S.payments.filter(p => (p.allocations || []).some(a => a.invoiceId === id))) { p.allocations = p.allocations.filter(a => a.invoiceId !== id); await Store.put('payments', p); }
-  await Store.del('invoices', id); closeModal(); toast(t('deleted')); render();
+  await Store.del('invoices', id);
+  // shipments billed by this invoice go back to "not billed" unless another invoice still covers them
+  for (const l of S.shiplinks.filter(l => (l.invoiceIds || []).includes(id))) { const ids = l.invoiceIds.filter(x => x !== id); await setShipLink(l.id, ids.length ? { invoiceIds: ids } : null); }
+  closeModal(); toast(t('deleted')); render();
 };
 
 /* ---------- payment modal ---------- */
@@ -1817,14 +1836,9 @@ function vVendor(id) {
     let bal = 0, hidden = 0;
     const paidInv = id => { const i = S.invoices.find(z => z.id === id); return i && invStatus(i, c.inv.get(id)) === 'paid'; };
     const hideRow = e => UI.ledHidePaid && (e.i ? invStatus(e.i, c.inv.get(e.i.id)) === 'paid'
-      : (e.p.allocations || []).length > 0 && Math.abs(payUnapplied(e.p)) < 1 && e.p.allocations.every(a => paidInv(a.invoiceId)));   // <$1 unapplied = cent rounding gap
-    // Hidden rows are rolled into one carry-forward line at the top, so every visible row reconciles:
-    // previous balance + charge - receipt = balance, and the last row equals the customer balance.
-    const delta = e => e.i ? (+e.i.amount || 0) : -(+e.p.amount || 0) - (+e.p.fee || 0);
-    ev.forEach(e => { if (hideRow(e)) { bal = r2(bal + delta(e)); hidden++; } });
-    const carry = (hidden && Math.abs(bal) >= 0.005) ? `<tr><td>—</td><td><span class="b">${t('carryHidden')}</span></td><td class="wrap muted" colspan="2">${t('carryHiddenNote', { n: hidden })}</td><td class="num"></td><td class="num"></td><td class="num">${money(bal)}</td><td>${centPays(id).length ? `<button class="btn sm ed" data-act="settleCents" data-vendor="${id}">${t('settleCents')}</button>` : ''}</td></tr>` : '';
-    const rows = carry + ev.map(e => {
-      if (hideRow(e)) return '';
+      : (e.p.allocations || []).length > 0 && Math.abs(payUnapplied(e.p)) < 0.005 && e.p.allocations.every(a => paidInv(a.invoiceId)));
+    const rows = ev.map(e => {
+      if (hideRow(e)) { bal = e.i ? r2(bal + (+e.i.amount || 0)) : r2(bal - (+e.p.amount || 0) - (+e.p.fee || 0)); hidden++; return ''; }
       if (e.i) { bal = r2(bal + (+e.i.amount || 0)); const x = c.inv.get(e.i.id); const st = invStatus(e.i, x); return `<tr class="click" data-act="editInv" data-id="${e.i.id}"><td>${e.d || '—'}</td><td><span class="b open">${t('charge')}</span></td><td class="wrap">${esc(e.i.invoiceNo)}</td><td class="wrap muted">${esc(e.i.memo)}</td><td class="num">${money(e.i.amount)}</td><td class="num"></td><td class="num">${money(bal)}</td><td>${badge(st)}${e.i.needsReview ? ' <span class="b review">!</span>' : ''}</td></tr>`; }
       bal = r2(bal - (+e.p.amount || 0) - (+e.p.fee || 0)); const invs = (e.p.allocations || []).map(a => S.invoices.find(i => i.id === a.invoiceId)?.invoiceNo).filter(Boolean);
       return `<tr class="click" data-act="editPay" data-id="${e.p.id}"><td>${e.d || '<span class="b review">' + t('noDate') + '</span>'}</td><td><span class="b paid">${t('payment')}</span></td><td class="wrap muted">${esc(invs.join(', ') || e.p.ref || '')}</td><td class="wrap muted">${esc([e.p.method ? t('methods_' + e.p.method) : '', e.p.memo, e.p.fee ? `${t('fee')} ${money(e.p.fee)}` : ''].filter(Boolean).join(' · '))}</td><td class="num"></td><td class="num">${money(e.p.amount)}</td><td class="num">${money(bal)}</td><td>${e.p.needsReview ? '<span class="b review">!</span>' : ''}</td></tr>`;
@@ -1835,28 +1849,8 @@ function vVendor(id) {
   }
   return h;
 }
-Object.assign(L, { hidePaid: ['Hide paid', '입금완료 숨기기'], hiddenPaid: ['{n} paid rows hidden (invoices fully received and their receipts). Their net is shown as the first line.', '입금완료 {n}행 숨김 (완납 인보이스와 그 입금). 숨긴 행의 순액은 맨 위 "숨긴 행 합계" 줄에 반영됩니다.'], carryHidden: ['Hidden', '숨긴 행 합계'], carryHiddenNote: ['Net of {n} hidden paid rows', '숨긴 입금완료 {n}행의 순액 (센트 차이 등)'] });
+Object.assign(L, { hidePaid: ['Hide paid', '입금완료 숨기기'], hiddenPaid: ['{n} paid rows hidden (invoices fully received and their receipts). Balance column still includes them.', '입금완료 {n}행 숨김 (완납 인보이스와 그 입금). 잔액 열은 숨긴 행까지 포함한 누계입니다.'] });
 UI.ledHidePaid = Pref.get('ledHidePaid', true);
-/* receipts whose invoices are all paid but carry a cent-level (<$1) unapplied gap */
-function centPays(vid) {
-  const c = compute({ asOf: '9999-12-31' });
-  return S.payments.filter(p => p.vendorId === vid && (p.allocations || []).length && (() => { const u = Math.abs(payUnapplied(p)); return u > 0.004 && u < 1; })()
-    && p.allocations.every(a => { const i = S.invoices.find(z => z.id === a.invoiceId); return i && invStatus(i, c.inv.get(i.id)) === 'paid'; }));
-}
-ACT.settleCents = async el => {
-  const ps = centPays(el.dataset.vendor); if (!ps.length) return;
-  const tot = r2(ps.reduce((s, p) => s + payUnapplied(p), 0));
-  if (!confirm(t('settleCentsQ', { n: ps.length, a: money(tot) }))) return;
-  for (const p0 of ps) {
-    const p = JSON.parse(JSON.stringify(p0)); const u = payUnapplied(p);
-    p.fee = r2((+p.fee || 0) - u);
-    p.memo = [p.memo, (LANG === 'ko' ? '센트 차이 정리 ' : 'Cent gap settled ') + money(u)].filter(Boolean).join(' · ');
-    p.reviewFlags = (p.reviewFlags || []).filter(f => f !== 'unapplied'); p.needsReview = p.reviewFlags.length > 0;
-    await Store.put('payments', p);
-  }
-  toast(t('savedT')); render();
-};
-Object.assign(L, { settleCents: ['Settle cents', '센트 차이 완료 처리'], settleCentsQ: ['Write off {a} of cent-level unapplied on {n} receipts (recorded as adjustment)?', '입금 {n}건의 미배분 센트 차이 {a}를 조정액으로 정리하고 완료 처리합니다. 계속할까요?'] });
 ACT.vtab = el => { UI.vendorTab = el.dataset.t; render(); };
 ACT.delVendor = async el => {
   const id = el.dataset.id; if (S.invoices.some(i => i.vendorId === id) || S.payments.some(p => p.vendorId === id)) return toast(t('hasInvoices'), true);
@@ -1941,7 +1935,7 @@ function exportWorkbook() {
   XLSX.writeFile(wb, `JNFAM_AR_${UI.asOf}.xlsx`);
 }
 async function backup() {
-  const data = { app: 'jnfam-ar', version: 1, exportedAt: new Date().toISOString(), data: { vendors: S.vendors, invoices: S.invoices, payments: S.payments, meta: S.meta } };
+  const data = { app: 'jnfam-ar', version: 1, exportedAt: new Date().toISOString(), data: { vendors: S.vendors, invoices: S.invoices, payments: S.payments, meta: S.meta, shiplinks: S.shiplinks } };
   download(`JNFAM_AR_backup_${todayStr()}.json`, new Blob([JSON.stringify(data)], { type: 'application/json' }));
 }
 async function restore(file) {
@@ -1986,7 +1980,11 @@ const CloudStore = {
       this.unsub.push(this.db.collection(CP + c).onSnapshot(snap => {
         S[c] = snap.docs.map(d => d.data());
         if (first) { first = false; res(); } else scheduleRender();
-      }, err => { if (first) { first = false; rej(err); } else toast(err.message, true); }));
+      }, err => {
+        // shiplinks is optional: a missing Firestore rule must not block the whole app
+        if (c === 'shiplinks') { SHIP.linkErr = err.message; S.shiplinks = []; if (first) { first = false; res(); } else scheduleRender(); return; }
+        if (first) { first = false; rej(err); } else toast(err.message, true);
+      }));
     })));
   },
   stop() { this.unsub.forEach(u => u()); this.unsub = []; },
@@ -2081,6 +2079,7 @@ async function cloudBoot() {
       AUTH.role = me.role;
       ref.update({ lastLogin: new Date().toISOString(), name: AUTH.name }).catch(() => { });
       await CloudStore.init();
+      shipBoot();
       if (can('admin')) watchAdmin();
       gate('ok'); render();
     } catch (e) { console.error(e); AUTH.error = e.message; gate('error'); }
@@ -2294,14 +2293,300 @@ ACT.regSave = async el => {
   toast(t('savedT')); nextReg(); render();
 };
 
+/* =====================================================================
+   출하 → 청구 확인 (Shipments to bill) — links Task Calendar "출하" tasks to AR invoices
+   Task Calendar data (Realtime DB, project jnfam-task-plan) is read-only here.
+   Decisions are stored in AR: shiplinks/{shipKey} = { status:'invoiced'|'nobill'|'hold', invoiceIds[], reason, snap:{date,text} }
+   shipKey = 'p~<patternId>~<occDate>' for recurring-pattern shipments (stable even after the occurrence is saved),
+             otherwise the task's own key.
+   A copy of each decision is written to RTDB arLinks/{shipKey} so the Task Calendar can show 🧾 on the chip.
+   ===================================================================== */
+Object.assign(L, {
+  ship: ['Shipments to bill', '출하 → 청구 확인'],
+  sh_sub: ['Task Calendar "출하" tasks since {d} — every shipment must be invoiced, marked no-bill, or put on hold.', 'Task Calendar "출하" Task ({d} 이후) — 모든 출하는 인보이스 연결 · 청구 불필요 · 보류 중 하나로 처리'],
+  sh_todo: ['Not billed', '미처리'], sh_invoiced: ['Invoiced', '발행 완료'], sh_nobill: ['No bill', '청구 불필요'], sh_hold: ['On hold', '보류'], sh_all: ['All', '전체'],
+  sh_shipDate: ['Ship date', '출하일'], sh_task: ['Task', 'Task'], sh_planQty: ['Planned qty', '계획 수량'], sh_taskSt: ['Task status', 'Task 상태'], sh_state: ['Billing', '청구 상태'], sh_age: ['Elapsed', '경과'],
+  sh_issue: ['Issue', '발행'], sh_link: ['Link', '연결'], sh_noBillBtn: ['No bill', '불필요'], sh_holdBtn: ['Hold', '보류'], sh_undo: ['Undo', '해제'],
+  sh_issueSel: ['Issue invoice for selected', '선택 건 인보이스 발행'], sh_linkSel: ['Link selected', '선택 건 기존 인보이스 연결'],
+  sh_noSel: ['Select shipments first.', '출하를 먼저 선택하세요.'], sh_mixed: ['Selected shipments belong to different customers.', '선택한 출하의 고객이 서로 다릅니다.'],
+  sh_reasonNoBill: ['Why is no invoice needed? (sample, return, internal transfer…)', '청구가 필요 없는 사유 (샘플, 반품, 내부 이동 등)'], sh_reasonHold: ['Hold reason (waiting for weight, price…)', '보류 사유 (계량 수량 대기, 단가 확정 대기 등)'], sh_reasonReq: ['Enter a reason.', '사유를 입력하세요.'],
+  sh_undoQ: ['Clear this decision? The shipment goes back to "Not billed".', '처리 내용을 지울까요? 출하가 "미처리"로 돌아갑니다.'],
+  sh_banner: ['This invoice will be linked to {n} shipment(s):', '이 인보이스는 출하 {n}건과 연결됩니다:'], sh_bannerNote: ['Planned quantities are only a reference — enter the actual weighed quantity.', '계획 수량은 참고용입니다 — 실제 계량 수량을 입력하세요.'], sh_unlinkDraft: ['Detach', '연결 빼기'],
+  sh_loading: ['Loading Task Calendar…', 'Task Calendar 불러오는 중…'], sh_noCfg: ['Task Calendar connection is not configured (AR_CONFIG.taskCalendar).', 'Task Calendar 연결 설정이 없습니다 (AR_CONFIG.taskCalendar).'],
+  sh_err: ['Cannot read Task Calendar: {e}', 'Task Calendar를 읽을 수 없습니다: {e}'], sh_linkErr: ['Cannot read/write shipment decisions (Firestore rule for {c} needed): {e}', '출하 처리 기록을 읽거나 쓸 수 없습니다 (Firestore 규칙에 {c} 허용 필요): {e}'],
+  sh_dash: ['{n} shipment(s) since {d} are not billed yet', '{d} 이후 청구 처리 안 된 출하 {n}건'], sh_dashLate: [' — {n} over {k} business days', ' — 그중 {n}건은 {k}영업일 경과'],
+  sh_cust: ['Customer', '고객'], sh_guess: ['guessed', '추정'], sh_noCust: ['no customer', '고객 미지정'], sh_taskNoBill: ['Not billable (set in Task)', '청구 대상 아님 (Task에서 지정)'], sh_taskGone: ['Task deleted/changed', 'Task 삭제·변경됨'],
+  sh_pick: ['Choose the invoice(s) for {n} shipment(s)', '출하 {n}건에 연결할 인보이스 선택'], sh_suggest: ['suggested', '추천'], sh_noInv: ['No invoices for this customer around the ship date.', '출하일 전후로 이 고객의 인보이스가 없습니다.'],
+  sh_showAllInv: ['Show all invoices of this customer', '이 고객의 인보이스 전체 보기'], sh_linked: ['Linked', '연결됨'],
+  sh_orphan: ['Product invoices since {d} not linked to any shipment', '{d} 이후 출하와 연결되지 않은 제품 인보이스'], sh_orphanNote: ['Check for a missing shipment task or a duplicate invoice.', 'Task 누락이나 중복 발행이 없는지 확인하세요.'],
+  sh_bd: ['{n} bd', '{n}영업일'],
+});
+const SHIP = { tasks: {}, patterns: {}, ready: false, err: '', linkErr: '', db: null, badgeWarned: false };
+UI.ship = Object.assign({ st: 'todo', vendor: '', product: '', month: '' }, Pref.get('ship', {}));
+const SHIP_START = () => CFG.shipStart || '2026-11-01';
+const SHIP_LATE = () => +CFG.shipLateDays || 3;
+const SHIP_PRODUCTS = ['HF', 'HCl', 'HNO3', 'H2SO4', 'KOH'];
+
+function shipBoot() {
+  const c = CFG.taskCalendar;
+  if (!c || !c.databaseURL) { SHIP.err = t('sh_noCfg'); return; }
+  if (!window.firebase || !firebase.database) { SHIP.err = 'firebase-database SDK not loaded'; return; }
+  try {
+    const app = firebase.apps.find(a => a.name === 'task') || firebase.initializeApp(c, 'task');
+    SHIP.db = app.database();
+    let got = 0;
+    const on = (path, k) => SHIP.db.ref(path).on('value', s => { SHIP[k] = s.val() || {}; if (++got >= 2) SHIP.ready = true; SHIP.err = ''; scheduleRender(); },
+      e => { SHIP.err = t('sh_err', { e: e.message }); SHIP.ready = true; scheduleRender(); });
+    on('tasks', 'tasks'); on('patterns', 'patterns');
+  } catch (e) { SHIP.err = t('sh_err', { e: e.message }); }
+}
+
+/* recurring-pattern dates — same rules as the Task Calendar (holidays: kept on the same date) */
+function shipPatternOccs(p, from, to) {
+  const out = []; if (!p || !p.start) return out;
+  const lo = from > p.start ? from : p.start, hi = (p.end && p.end < to) ? p.end : to; if (lo > hi) return out;
+  const iv = Math.max(1, +p.interval || 1), st = toDate(p.start);
+  if (p.freq === 'monthly') {
+    let y = toDate(lo).getFullYear(), m = toDate(lo).getMonth(); const hy = toDate(hi).getFullYear(), hm = toDate(hi).getMonth();
+    while (y < hy || (y === hy && m <= hm)) {
+      const diff = (y - st.getFullYear()) * 12 + (m - st.getMonth());
+      if (diff >= 0 && diff % iv === 0) { const last = new Date(y, m + 1, 0).getDate(); const dd = p.mday === 'last' ? last : Math.min(+p.mday || 1, last); const ds = ymd(new Date(y, m, dd)); if (ds >= lo && ds <= hi) out.push(ds); }
+      if (++m > 11) { m = 0; y++; }
+    }
+  } else {
+    const days = (p.days || []).map(Number); const monOf = d => { const x = new Date(d); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; };
+    const w0 = monOf(st);
+    for (let d = toDate(lo); ymd(d) <= hi; d.setDate(d.getDate() + 1)) {
+      if (!days.includes(d.getDay())) continue;
+      if (Math.round((monOf(d) - w0) / 604800000) % iv === 0) out.push(ymd(d));
+    }
+  }
+  return out;
+}
+const shipKeyOf = (key, tk) => tk.patternId && tk.occDate ? `p~${tk.patternId}~${tk.occDate}` : key;
+function shipInfo(key, tk, link) {
+  const text = String(tk.text || '');
+  let v = tk.customer ? detectVendor(tk.customer, '') : null, vConf = v ? 'hi' : '';
+  if (!v) { v = detectVendor(text, ''); if (v) vConf = 'hi'; }
+  const product = tk.product || productOf(text);
+  // customer-schedule imports are Qcells HF/HCl/HNO3 → best guess when nothing else says otherwise
+  if (!v && ['HF', 'HCl', 'HNO3'].includes(product)) { v = S.vendors.find(x => /q\s*-?cell/i.test(x.name) && x.active !== false); if (v) vConf = 'mid'; }
+  let qty = +tk.qty || 0, unit = tk.unit || '';
+  if (!qty) { const m = text.match(/([\d,]+(?:\.\d+)?)\s*(lbs?|kg)\b/i); if (m) { qty = +m[1].replace(/,/g, ''); unit = /kg/i.test(m[2]) ? 'Kg' : 'lb'; } }
+  const s = { key, tk, date: tk.deadline, text, vendorId: v ? v.id : '', vConf, product, qty, unit, poNo: tk.poNo || '', billable: tk.billable !== false, taskStatus: tk.status || '예정', gone: !!tk._gone, link };
+  s.state = shipState(s); s.bd = shipBizDays(s.date, todayStr()); s.late = s.state === 'todo' && s.bd > SHIP_LATE();
+  return s;
+}
+function shipState(s) {
+  if (s.link) {
+    if (s.link.status === 'invoiced') return (s.link.invoiceIds || []).some(id => S.invoices.some(i => i.id === id)) ? 'invoiced' : 'todo';
+    if (s.link.status === 'nobill' || s.link.status === 'hold') return s.link.status;
+  }
+  return s.billable ? 'todo' : 'nobill';
+}
+function shipBizDays(from, to) { let n = 0; const d = toDate(from), e = toDate(to); if (!d || !e) return 0; while (d < e) { d.setDate(d.getDate() + 1); const w = d.getDay(); if (w !== 0 && w !== 6) n++; } return n; }
+
+let _shipCache = null;   // valid for one render pass (render() clears it)
+function shipments() {
+  if (_shipCache) return _shipCache;
+  const start = SHIP_START(), end = todayStr();
+  const links = new Map(S.shiplinks.map(l => [l.id, l]));
+  const real = Object.entries(SHIP.tasks || {}).filter(([, x]) => x && x.deadline);
+  const saved = new Set(real.filter(([, x]) => x.patternId).map(([, x]) => x.patternId + '|' + x.occDate));
+  const all = real.map(([k, x]) => [shipKeyOf(k, x), x]);
+  for (const [pid, p] of Object.entries(SHIP.patterns || {})) {
+    if (!p || p.active === false || p.category !== '출하') continue;
+    for (const occ of shipPatternOccs(p, start, end)) {
+      if ((p.skip && p.skip[occ]) || saved.has(pid + '|' + occ)) continue;
+      all.push([`p~${pid}~${occ}`, { text: p.text, deadline: occ, category: p.category, status: '예정', worker: p.worker || '', customer: p.customer || '', product: p.product || '', poNo: p.poNo || '', billable: p.billable, patternId: pid, occDate: occ }]);
+    }
+  }
+  const out = []; const seen = new Set();
+  for (const [key, x] of all) {
+    if ((x.category || '') !== '출하' || x.status === '보류' || x.deadline < start || x.deadline > end || seen.has(key)) continue;
+    seen.add(key); out.push(shipInfo(key, x, links.get(key)));
+  }
+  // decisions whose task was deleted or moved out of range — keep them visible
+  for (const l of S.shiplinks) if (!seen.has(l.id) && l.snap && l.snap.date >= start) out.push(shipInfo(l.id, { text: l.snap.text, deadline: l.snap.date, category: '출하', status: '', customer: l.snap.customer || '', product: l.snap.product || '', _gone: true }, l));
+  out.sort((a, b) => a.date.localeCompare(b.date) || a.text.localeCompare(b.text));
+  _shipCache = out; return out;
+}
+const shipTodoCount = () => (SHIP.ready && !SHIP.err) ? shipments().filter(s => s.state === 'todo').length : 0;
+
+/* ---------- decisions ---------- */
+async function setShipLink(key, patch) {
+  const cur = S.shiplinks.find(l => l.id === key);
+  if (patch === null) { if (cur) await Store.del('shiplinks', key); }
+  else {
+    const s = SHIP.ready ? shipments().find(x => x.key === key) : null;
+    const snap = cur?.snap || (s ? { date: s.date, text: s.text, customer: s.vendorId ? vName(s.vendorId) : '', product: s.product } : null);
+    await Store.put('shiplinks', { ...(cur || {}), id: key, invoiceIds: [], reason: '', ...patch, snap });
+  }
+  pushTaskBadge(key);
+}
+async function linkShips(keys, invIds) {
+  for (const k of keys) {
+    const cur = S.shiplinks.find(l => l.id === k);
+    const ids = [...new Set([...(cur && cur.status === 'invoiced' ? cur.invoiceIds || [] : []), ...invIds])];
+    await setShipLink(k, { status: 'invoiced', invoiceIds: ids, reason: '' });
+  }
+}
+/* mirror to the Task Calendar so the 출하 chip shows 🧾 — failures (RTDB rule) only warn once */
+async function pushTaskBadge(key) {
+  if (!SHIP.db) return;
+  const l = S.shiplinks.find(x => x.id === key);
+  try {
+    const ref = SHIP.db.ref('arLinks/' + key);
+    if (!l) await ref.remove();
+    else await ref.set({ status: l.status, invoiceNos: (l.invoiceIds || []).map(id => S.invoices.find(i => i.id === id)?.invoiceNo).filter(Boolean), reason: l.reason || '', at: new Date().toISOString(), by: currentUserName() || '' });
+  } catch (e) {
+    if (!SHIP.badgeWarned) { SHIP.badgeWarned = true; toast((LANG === 'ko' ? 'Task Calendar 표시(arLinks) 쓰기 실패 — Realtime DB 규칙에 arLinks 허용 필요: ' : 'Could not write arLinks to the Task Calendar DB: ') + e.message, true); }
+  }
+}
+
+/* ---------- view ---------- */
+const SH_STATES = ['todo', 'hold', 'invoiced', 'nobill', 'all'];
+const shBadge = s => s.state === 'invoiced' ? `<span class="b paid">🧾 ${t('sh_invoiced')}</span>` : s.state === 'nobill' ? `<span class="b ic">${t('sh_nobill')}</span>` : s.state === 'hold' ? `<span class="b review">⏸ ${t('sh_hold')}</span>` : `<span class="b ${s.late ? 'overdue' : 'open'}">${t('sh_todo')}</span>`;
+function vShip() {
+  if (!S.vendors.length) return welcome();
+  const start = SHIP_START(); const f = UI.ship;
+  let h = pageHead(t('ship'), t('sh_sub', { d: start }), `<button class="btn ed" data-act="shipLink">🔗 ${t('sh_linkSel')}</button><button class="btn pri ed" data-act="shipIssue">🧾 ${t('sh_issueSel')}</button>`);
+  if (SHIP.linkErr) h += `<div class="errbox">${esc(t('sh_linkErr', { c: CP + 'shiplinks', e: SHIP.linkErr }))}</div>`;
+  if (SHIP.err) return h + `<div class="errbox">${esc(SHIP.err)}</div>`;
+  if (!SHIP.ready) return h + `<div class="card"><div class="empty"><span class="spin"></span> ${t('sh_loading')}</div></div>`;
+  const all = shipments();
+  const cnt = k => all.filter(s => s.state === k).length;
+  const late = all.filter(s => s.late).length;
+  const kp = (k, l, sub = '', cls = '') => `<div class="card kpi ${cls}" data-act="shipSt" data-st="${k}" style="${f.st === k ? 'border-color:var(--accent)' : ''}"><div class="l">${l}</div><div class="v">${cnt(k)}</div><div class="s">${sub}</div></div>`;
+  h += `<div class="vhead">${kp('todo', t('sh_todo'), late ? `<span style="color:var(--bad)">${t('sh_dashLate', { n: late, k: SHIP_LATE() }).replace(/^ — /, '')}</span>` : '', cnt('todo') ? 'bad' : '')}${kp('invoiced', t('sh_invoiced'))}${kp('nobill', t('sh_nobill'))}${kp('hold', t('sh_hold'), '', cnt('hold') ? 'warn' : '')}</div>`;
+  const months = [...new Set(all.map(s => s.date.slice(0, 7)))].sort().reverse();
+  let list = all.filter(s => (f.st === 'all' || s.state === f.st) && (!f.vendor || s.vendorId === f.vendor) && (!f.product || s.product === f.product) && (!f.month || s.date.startsWith(f.month)));
+  if (f.st === 'todo' || f.st === 'hold') list = [...list].sort((a, b) => a.date.localeCompare(b.date)); else list = [...list].sort((a, b) => b.date.localeCompare(a.date));
+  const cust = S.vendors.filter(v => !isIC(v)).sort((a, b) => a.name.localeCompare(b.name));
+  h += `<div class="filters">
+    <select class="inp" id="shSt">${SH_STATES.map(k => `<option value="${k}" ${f.st === k ? 'selected' : ''}>${t('sh_' + k)}</option>`).join('')}</select>
+    <select class="inp" id="shV"><option value="">${t('allCustomers')}</option>${cust.map(v => `<option value="${v.id}" ${f.vendor === v.id ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select>
+    <select class="inp" id="shP"><option value="">${t('allProducts')}</option>${SHIP_PRODUCTS.map(p => `<option value="${p}" ${f.product === p ? 'selected' : ''}>${p}</option>`).join('')}</select>
+    <select class="inp" id="shM"><option value="">${LANG === 'ko' ? '전체 월' : 'All months'}</option>${months.map(m => `<option value="${m}" ${f.month === m ? 'selected' : ''}>${monLabel(m)}</option>`).join('')}</select>
+    <span style="flex:1"></span><span class="muted" style="font-size:12px">${t('showing', { n: list.length, m: all.length })}</span></div>`;
+  const qtyTxt = s => s.qty ? `${fmtUSD(s.qty, 0)} ${esc(s.unit || '')}` : '<span class="muted">—</span>';
+  const custTxt = s => s.vendorId ? `${esc(vName(s.vendorId))}${s.vConf === 'mid' ? ` <span class="muted" style="font-size:11px">(${t('sh_guess')})</span>` : ''}` : `<span class="muted">${t('sh_noCust')}</span>`;
+  const detail = s => {
+    if (s.state === 'invoiced') return (s.link.invoiceIds || []).map(id => S.invoices.find(i => i.id === id)).filter(Boolean).map(i => `<a class="link" data-act="editInv" data-id="${i.id}">${esc(i.invoiceNo || '—')}</a> <span class="muted">${money(i.amount, 0)}</span>`).join('<br>');
+    if (s.link && s.link.reason) return `<span class="muted" title="${esc(s.link.reason)}">${esc(s.link.reason)}</span>`;
+    if (!s.billable) return `<span class="muted">${t('sh_taskNoBill')}</span>`;
+    return '';
+  };
+  const acts = s => {
+    const k = esc(s.key);
+    if (s.state === 'todo') return `<button class="btn sm pri ed" data-act="shipIssue" data-key="${k}">${t('sh_issue')}</button> <button class="btn sm ed" data-act="shipLink" data-key="${k}">${t('sh_link')}</button> <button class="btn sm ghost ed" data-act="shipNoBill" data-key="${k}">${t('sh_noBillBtn')}</button> <button class="btn sm ghost ed" data-act="shipHold" data-key="${k}">${t('sh_holdBtn')}</button>`;
+    if (s.state === 'hold') return `<button class="btn sm pri ed" data-act="shipIssue" data-key="${k}">${t('sh_issue')}</button> <button class="btn sm ed" data-act="shipLink" data-key="${k}">${t('sh_link')}</button> <button class="btn sm ghost ed" data-act="shipNoBill" data-key="${k}">${t('sh_noBillBtn')}</button> <button class="btn sm ghost ed" data-act="shipUndo" data-key="${k}">${t('sh_undo')}</button>`;
+    if (s.state === 'invoiced') return `<button class="btn sm ed" data-act="shipLink" data-key="${k}">＋ ${t('sh_link')}</button> <button class="btn sm ghost ed" data-act="shipUndo" data-key="${k}">${t('sh_undo')}</button>`;
+    return s.link ? `<button class="btn sm ghost ed" data-act="shipUndo" data-key="${k}">${t('sh_undo')}</button>` : '';
+  };
+  h += `<div class="card"><div class="tbl-wrap tbl-scroll"><table class="t"><thead><tr><th><input type="checkbox" id="shAll"></th><th>${t('sh_shipDate')}</th><th>${t('sh_task')}</th><th>${t('sh_cust')}</th><th>${t('account')}</th><th class="num">${t('sh_planQty')}</th><th>${t('sh_taskSt')}</th><th>${t('sh_state')}</th><th class="num">${t('sh_age')}</th><th>${t('invNo')} / ${t('note')}</th><th></th></tr></thead><tbody>
+  ${list.map(s => `<tr${s.late ? ' style="background:#fff7f7"' : ''}><td>${s.state === 'todo' || s.state === 'hold' ? `<input type="checkbox" class="selShip" value="${esc(s.key)}">` : ''}</td><td>${s.date}</td><td class="wrap" title="${esc(s.text)}">${s.key.startsWith('p~') ? '<span class="muted">↻</span> ' : ''}${esc(s.text)}${s.poNo ? ` <span class="muted" style="font-size:11px">· PO ${esc(s.poNo)}</span>` : ''}</td><td class="wrap">${custTxt(s)}</td><td>${esc(s.product || '—')}</td><td class="num">${qtyTxt(s)}</td><td>${s.gone ? `<span class="b review">${t('sh_taskGone')}</span>` : `<span class="muted">${esc(s.taskStatus)}</span>`}</td><td>${shBadge(s)}</td><td class="num ${s.late ? '' : 'muted'}" ${s.late ? 'style="color:var(--bad);font-weight:600"' : ''}>${s.state === 'todo' || s.state === 'hold' ? t('sh_bd', { n: s.bd }) : ''}</td><td class="wrap">${detail(s)}</td><td style="white-space:nowrap">${acts(s)}</td></tr>`).join('') || `<tr><td colspan="11" class="empty">${t('noData')}</td></tr>`}
+  </tbody></table></div></div>`;
+  // reverse check: product invoices since the start date with no shipment link
+  const linkedIds = new Set(S.shiplinks.filter(l => l.status === 'invoiced').flatMap(l => l.invoiceIds || []));
+  const orphan = S.invoices.filter(i => i.invoiceDate >= start && !linkedIds.has(i.id) && !isIC(vendorById(i.vendorId)) && SHIP_PRODUCTS.includes(i.product || productOf(i.memo))).sort((a, b) => b.invoiceDate.localeCompare(a.invoiceDate));
+  if (orphan.length) h += `<div class="card" style="margin-top:16px"><div class="card-h"><h3>${t('sh_orphan', { d: start })}</h3><span class="sp"></span><span class="b review">${orphan.length}</span></div><div class="card-b"><div class="muted" style="font-size:12px;margin-bottom:8px">${t('sh_orphanNote')}</div><div class="tbl-wrap" style="max-height:300px"><table class="t"><thead><tr><th>${t('invDate')}</th><th>${t('vendor')}</th><th>${t('invNo')}</th><th>${t('memo')}</th><th class="num">${t('amount')}</th></tr></thead><tbody>${orphan.map(i => `<tr class="click" data-act="editInv" data-id="${i.id}"><td>${i.invoiceDate}</td><td class="wrap">${esc(vName(i.vendorId))}</td><td>${esc(i.invoiceNo)}</td><td class="wrap muted">${esc(i.memo)}</td><td class="num">${money(i.amount)}</td></tr>`).join('')}</tbody></table></div></div></div>`;
+  setTimeout(() => {
+    const save = () => { Pref.set('ship', UI.ship); render(); };
+    const on = (id, k) => { const el = $('#' + id); if (el) el.onchange = () => { UI.ship[k] = el.value; save(); }; };
+    on('shSt', 'st'); on('shV', 'vendor'); on('shP', 'product'); on('shM', 'month');
+    const a = $('#shAll'); if (a) a.onchange = () => $$('.selShip').forEach(x => x.checked = a.checked);
+  });
+  return h;
+}
+ACT.shipSt = el => { UI.ship.st = el.dataset.st; Pref.set('ship', UI.ship); render(); };
+function shipDashBox() {
+  if (!SHIP.ready || SHIP.err) return '';
+  const todo = shipments().filter(s => s.state === 'todo'); if (!todo.length) return '';
+  const late = todo.filter(s => s.late).length;
+  return `<div class="${late ? 'errbox' : 'warnbox'}" style="cursor:pointer;font-size:13px" data-act="go" data-go="ship">🚚 ${t('sh_dash', { n: todo.length, d: SHIP_START() })}${late ? t('sh_dashLate', { n: late, k: SHIP_LATE() }) : ''} →</div>`;
+}
+
+/* ---------- actions ---------- */
+function shipKeysFrom(el) {
+  const keys = el.dataset.key ? [el.dataset.key] : $$('.selShip:checked').map(x => x.value);
+  if (!keys.length) { toast(t('sh_noSel'), true); return null; }
+  const all = shipments(); return keys.map(k => all.find(s => s.key === k)).filter(Boolean);
+}
+/* line item from the customer's latest issued invoice for the same product (name, description, price) */
+function shipLine(vid, s) {
+  const prev = S.invoices.filter(i => i.issue && i.vendorId === vid).sort((a, b) => (b.invoiceDate || '').localeCompare(a.invoiceDate || ''))
+    .flatMap(i => i.issue.lines || []).find(l => s.product && productOf((l.name || '') + ' ' + (l.desc || '')) === s.product);
+  return { name: prev?.name || s.product || '', desc: prev?.desc || '', desc2: '', qty: '', unit: prev?.unit || 'Kg', pack: prev?.pack ?? 'ISO', price: prev?.price ?? '', note: `Shuttle ${s.date.slice(5, 7)}/${s.date.slice(8, 10)}/${s.date.slice(0, 4)}` };
+}
+ACT.shipIssue = el => {
+  const ss = shipKeysFrom(el); if (!ss) return;
+  const vs = new Set(ss.map(s => s.vendorId).filter(Boolean)); if (vs.size > 1) return toast(t('sh_mixed'), true);
+  const vid = [...vs][0] || '';
+  ISS.d = newIssueDraft(vid);
+  const v = vendorById(vid); if (v) ISS.d.consName = v.billName || v.name;
+  ISS.d.lines = ss.map(s => shipLine(vid, s));
+  const po = ss.map(s => s.poNo).find(Boolean); if (po) ISS.d.poNo = po;
+  const r = poRule(vid, ISS.d.poNo); if (r) ISS.d.deposit50 = r.pct < 100;
+  ISS.d.shipKeys = ss.map(s => s.key);
+  ISS.d.invoiceNo = suggestInvNo(ISS.d);
+  location.hash = 'issue';
+};
+function shipIssueBanner(d) {
+  if (!d.shipKeys || !d.shipKeys.length) return '';
+  const all = SHIP.ready ? shipments() : [];
+  const rows = d.shipKeys.map(k => all.find(s => s.key === k)).filter(Boolean);
+  return `<div class="okbox" style="font-size:13px;color:var(--text)"><b>🚚 ${t('sh_banner', { n: d.shipKeys.length })}</b>
+    <div style="margin:6px 0 4px">${rows.map(s => `${s.date} · ${esc(s.text)}${s.qty ? ` · <b>${fmtUSD(s.qty, 0)} ${esc(s.unit)}</b>` : ''}`).join('<br>')}</div>
+    <span class="muted" style="font-size:12px">${t('sh_bannerNote')}</span> <button class="btn sm ghost" data-act="shipDetach">${t('sh_unlinkDraft')}</button></div>`;
+}
+ACT.shipDetach = () => { if (ISS.d) delete ISS.d.shipKeys; render(); };
+ACT.shipNoBill = el => shipReason(el, 'nobill', t('sh_reasonNoBill'));
+ACT.shipHold = el => shipReason(el, 'hold', t('sh_reasonHold'));
+async function shipReason(el, status, label) {
+  const ss = shipKeysFrom(el); if (!ss) return;
+  const cur = ss.length === 1 && ss[0].link && ss[0].link.status === status ? ss[0].link.reason : '';
+  const reason = prompt(`${label}\n(${ss.length}${LANG === 'ko' ? '건' : ' shipment(s)'})`, cur || ''); if (reason === null) return;
+  if (!reason.trim()) return toast(t('sh_reasonReq'), true);
+  for (const s of ss) await setShipLink(s.key, { status, reason: reason.trim(), invoiceIds: [] });
+  toast(t('savedT')); render();
+}
+ACT.shipUndo = async el => { if (!confirm(t('sh_undoQ'))) return; await setShipLink(el.dataset.key, null); toast(t('savedT')); render(); };
+ACT.shipLink = el => {
+  const ss = shipKeysFrom(el); if (!ss) return;
+  const vs = new Set(ss.map(s => s.vendorId).filter(Boolean)); if (vs.size > 1) return toast(t('sh_mixed'), true);
+  let vid = [...vs][0] || ''; let wide = false;
+  const d0 = ss.map(s => s.date).sort()[0], d1 = ss.map(s => s.date).sort().pop();
+  const already = new Set(ss.flatMap(s => s.link && s.link.status === 'invoiced' ? s.link.invoiceIds || [] : []));
+  const prods = new Set(ss.map(s => s.product).filter(Boolean));
+  const body = `<div class="filters"><select class="inp" id="slV">${vendorOptions(vid)}</select><label class="chk"><input type="checkbox" id="slWide"> ${t('sh_showAllInv')}</label></div><div class="tbl-wrap" style="max-height:380px" id="slBox"></div>`;
+  openModal({ title: t('sh_pick', { n: ss.length }), body, wide: true, foot: `<span class="muted" style="font-size:12px">${ss.map(s => `${s.date} ${esc(s.text)}`).slice(0, 3).join(' · ')}${ss.length > 3 ? ' …' : ''}</span><span class="sp"></span><button class="btn" data-act="closeModal">${t('cancel')}</button><button class="btn pri ed" id="slSave">${t('save')}</button>` });
+  const draw = () => {
+    const lo = addDays(d0, -14), hi = addDays(d1, 21);
+    const cand = S.invoices.filter(i => (!vid || i.vendorId === vid) && (wide || (i.invoiceDate >= lo && i.invoiceDate <= hi)))
+      .map(i => { const gap = Math.abs(daysBetween(d0, i.invoiceDate || d0)); const sameP = prods.has(i.product || productOf(i.memo)); return { i, gap, sug: sameP && gap <= 7 && !already.has(i.id) }; })
+      .sort((a, b) => (b.sug - a.sug) || a.gap - b.gap).slice(0, 200);
+    const pick = cand.filter(c => c.sug).length === 1 && ss.length === 1 ? cand.find(c => c.sug).i.id : null;
+    $('#slBox').innerHTML = cand.length ? `<table class="t"><thead><tr><th></th><th>${t('invDate')}</th><th>${t('vendor')}</th><th>${t('invNo')}</th><th>${t('memo')}</th><th class="num">${t('amount')}</th><th></th></tr></thead><tbody>${cand.map(c => `<tr><td><input type="checkbox" class="slChk" value="${c.i.id}" ${already.has(c.i.id) || c.i.id === pick ? 'checked' : ''}></td><td>${c.i.invoiceDate}</td><td class="wrap">${esc(vName(c.i.vendorId))}</td><td>${esc(c.i.invoiceNo)}</td><td class="wrap muted">${esc(c.i.memo)}</td><td class="num">${money(c.i.amount)}</td><td>${already.has(c.i.id) ? `<span class="b paid">${t('sh_linked')}</span>` : c.sug ? `<span class="b open">${t('sh_suggest')}</span>` : ''}</td></tr>`).join('')}</tbody></table>` : `<div class="empty">${t('sh_noInv')}</div>`;
+  };
+  $('#slV').onchange = e => { vid = e.target.value; draw(); };
+  $('#slWide').onchange = e => { wide = e.target.checked; draw(); };
+  draw();
+  $('#slSave').onclick = async () => {
+    const ids = $$('.slChk:checked').map(x => x.value); if (!ids.length) return toast(t('sh_noSel'), true);
+    for (const s of ss) await setShipLink(s.key, { status: 'invoiced', invoiceIds: ids, reason: '' });
+    closeModal(); toast(t('savedT')); render();
+  };
+};
+
 /* ---------- router / nav ---------- */
 const NAV = [
-  ['dashboard', '◧'], ['sales', '📈'], ['summary', '▤'], ['invoices', '≡'], ['register', '⤒', 'edit'], ['issue', '🧾', 'edit'], ['payments', '💳'], ['vendors', '◎'], ['users', '👥', 'admin', true], ['settings', '⚙'],
+  ['dashboard', '◧'], ['sales', '📈'], ['summary', '▤'], ['invoices', '≡'], ['ship', '🚚'], ['register', '⤒', 'edit'], ['issue', '🧾', 'edit'], ['payments', '💳'], ['vendors', '◎'], ['users', '👥', 'admin', true], ['settings', '⚙'],
 ];
 function renderNav() {
   const cur = (location.hash.slice(1) || 'dashboard').split('/')[0];
   const rv = S.invoices.filter(i => i.needsReview).length;
-  $('#navlinks').innerHTML = NAV.filter(([k, ic, need, cloudOnly]) => (!need || can(need)) && (!cloudOnly || CLOUD)).map(([k, ic]) => `<a href="#${k}" class="${cur === k || (cur === 'vendor' && k === 'vendors') ? 'on' : ''}"><span class="ico">${ic}</span><span class="t">${t(k)}</span>${k === 'invoices' && rv ? `<span class="cnt" title="${t('needReview')}">${rv}</span>` : ''}${k === 'users' && typeof ADM !== 'undefined' && ADM.requests.length ? `<span class="cnt">${ADM.requests.length}</span>` : ''}${k === 'register' && REG.items.filter(x => x.status === 'ready').length ? `<span class="cnt" style="background:var(--accent-l);color:var(--accent-d)">${REG.items.filter(x => x.status === 'ready').length}</span>` : ''}</a>`).join('');
+  $('#navlinks').innerHTML = NAV.filter(([k, ic, need, cloudOnly]) => (!need || can(need)) && (!cloudOnly || CLOUD)).map(([k, ic]) => `<a href="#${k}" class="${cur === k || (cur === 'vendor' && k === 'vendors') ? 'on' : ''}"><span class="ico">${ic}</span><span class="t">${t(k)}</span>${k === 'invoices' && rv ? `<span class="cnt" title="${t('needReview')}">${rv}</span>` : ''}${k === 'ship' && shipTodoCount() ? `<span class="cnt" title="${t('sh_todo')}">${shipTodoCount()}</span>` : ''}${k === 'users' && typeof ADM !== 'undefined' && ADM.requests.length ? `<span class="cnt">${ADM.requests.length}</span>` : ''}${k === 'register' && REG.items.filter(x => x.status === 'ready').length ? `<span class="cnt" style="background:var(--accent-l);color:var(--accent-d)">${REG.items.filter(x => x.status === 'ready').length}</span>` : ''}</a>`).join('');
   $$('.lang-toggle button').forEach(b => b.classList.toggle('on', b.dataset.lang === LANG));
   if (CLOUD) {
     $('#who').innerHTML = AUTH.email ? `<div style="font-weight:600;color:var(--text)">👤 ${esc(AUTH.name)}</div><div style="margin:2px 0 6px"><span class="b ${AUTH.role === 'admin' ? 'overdue' : AUTH.role === 'editor' ? 'open' : 'ic'}">${t('role_' + AUTH.role)}</span></div><button class="btn sm" id="btnOut">${t('signOut')}</button>` : '';
@@ -2312,18 +2597,19 @@ function renderNav() {
 function render(keepFocus) {
   const focusId = keepFocus && document.activeElement ? document.activeElement.id : null; const caret = focusId ? document.activeElement.selectionStart : null;
   Object.values(CH).forEach(ch => ch && ch.destroy && ch.destroy()); CH = {};
+  _shipCache = null;
   const [view, arg] = (location.hash.slice(1) || 'dashboard').split('/');
   renderNav();
   if (CLOUD && AUTH.status !== 'ok') return;
   document.body.classList.toggle('ro', !can('edit')); document.body.classList.toggle('isadm', can('admin'));
   const noPerm = () => `<div class="errbox">${t('noPerm')}</div>`;
-  const fn = { dashboard: vDashboard, sales: vSales, summary: vSummary, invoices: vInvoices, register: can('edit') ? vRegister : noPerm, issue: can('edit') ? vIssue : noPerm, payments: vPayments, vendors: vVendors, vendor: () => vVendor(arg), settings: vSettings, users: CLOUD ? vUsers : vDashboard }[view] || vDashboard;
+  const fn = { dashboard: vDashboard, sales: vSales, summary: vSummary, invoices: vInvoices, ship: vShip, register: can('edit') ? vRegister : noPerm, issue: can('edit') ? vIssue : noPerm, payments: vPayments, vendors: vVendors, vendor: () => vVendor(arg), settings: vSettings, users: CLOUD ? vUsers : vDashboard }[view] || vDashboard;
   $('#view').innerHTML = fn();
   bindAsOf(); bindRegister();
   if (focusId && $('#' + focusId)) { const el = $('#' + focusId); el.focus(); try { el.setSelectionRange(caret, caret); } catch { } }
 }
 function setLang(l) { LANG = l; Pref.set('lang', l); document.documentElement.lang = l; render(); }
-const EDIT_ACTS = new Set(['newInv', 'payFor', 'payInv', 'newPay', 'newVendor', 'delInv', 'delPay', 'delVendor', 'regNewVendor', 'regSave', 'regAI', 'dep50', 'issSave', 'addUser', 'editUser', 'delUser', 'approveReq', 'dismissReq']);
+const EDIT_ACTS = new Set(['newInv', 'payFor', 'payInv', 'newPay', 'newVendor', 'delInv', 'delPay', 'delVendor', 'regNewVendor', 'regSave', 'regAI', 'dep50', 'issSave', 'shipIssue', 'shipLink', 'shipNoBill', 'shipHold', 'shipUndo', 'addUser', 'editUser', 'delUser', 'approveReq', 'dismissReq']);
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]'); if (!el || !ACT[el.dataset.act]) return;
   e.preventDefault();
@@ -2341,6 +2627,7 @@ window.addEventListener('hashchange', () => { closeModal(); if (!location.hash.s
   if (CLOUD) return cloudBoot();
   try { await Store.init(); }
   catch (e) { $('#view').innerHTML = `<div class="errbox">${t('storageErr')}: ${esc(e.message)}</div>`; return; }
+  shipBoot();
   render();
   if (Pref.get('lang', null) === null) langPicker();
 })();
