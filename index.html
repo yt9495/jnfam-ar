@@ -481,6 +481,9 @@ function invStatus(i, x) {
   return 'open';
 }
 const badge = st => `<span class="b ${st}">${t('st_' + st)}</span>`;
+/* A receipt entered ahead of time counts as received only once its receipt date arrives. */
+const isFuturePay = p => !!(p && p.date && p.date > todayStr());
+const futBadge = () => `<span class="b review" title="${LANG === 'ko' ? '입금일이 아직 오지 않아 입금 완료로 보지 않습니다' : 'Not counted as received until the receipt date'}">${LANG === 'ko' ? '입금 예정' : 'Scheduled'}</span>`;
 
 /* =====================================================================
    Products & invoice-number helpers
@@ -1064,7 +1067,7 @@ function periodStats(r, inclIC) {
   S.vendors.filter(v => ok(v.id)).forEach(v => row(v.id));
   const prod = new Map();
   for (const i of S.invoices) { if (!ok(i.vendorId) || !inRange(i.invoiceDate)) continue; const x = row(i.vendorId); x.invoiced = r2(x.invoiced + (+i.amount || 0)); x.nInv++; for (const ln of invLines(i)) { const p = ln.product || i.product || ''; prod.set(p, r2((prod.get(p) || 0) + (+ln.amount || 0))); } }
-  for (const p of S.payments) { if (!ok(p.vendorId) || !inRange(p.date)) continue; const x = row(p.vendorId); x.received = r2(x.received + (+p.amount || 0)); x.adj = r2(x.adj + (+p.fee || 0)); x.nPay++; }
+  for (const p of S.payments) { if (!ok(p.vendorId) || !inRange(p.date) || isFuturePay(p)) continue; const x = row(p.vendorId); x.received = r2(x.received + (+p.amount || 0)); x.adj = r2(x.adj + (+p.fee || 0)); x.nPay++; }
   const list = [...rows.values()];
   const sum = k => r2(list.reduce((s, x) => s + (x[k] || 0), 0));
   const tot = { opening: sum('opening'), invoiced: sum('invoiced'), nInv: sum('nInv'), received: sum('received'), nPay: sum('nPay'), adj: sum('adj'), closing: sum('closing'), overdue: sum('overdue'), aging: cC.tot.aging };
@@ -1084,8 +1087,8 @@ const monLabel = mo => { const [y, m] = mo.split('-'); return LANG === 'ko' ? `$
 /* monthly collection plan: invoices due by month-end that were still unpaid at the start of the month */
 Object.assign(L, {
   cp_title: ['Collections plan', '월 입금 예정'], cp_target: ['Due this month', '이번 달 입금 예정'], cp_done: ['Received', '입금 완료'], cp_left: ['Still to collect', '남은 입금 예정'],
-  cp_carry: ['incl. {x} overdue carried in', '전월 연체 이월 {x} 포함'], cp_future: ['incl. {x} dated after today', '오늘 이후 날짜 입금 {x} 포함'], cp_open: ['Open invoices', '남은 인보이스'],
-  cp_note: ['Due this month = invoices due on or before month-end that were unpaid on the 1st (overdue carried in). Received = receipts applied to them this month. Early payments of next month\'s invoices are not counted.', '입금 예정 = 이 달 말까지 만기인 인보이스 중 1일 기준 미입금액(전월 연체 이월 포함). 입금 완료 = 그 인보이스에 이번 달 배분된 입금. 다음 달 만기분을 미리 받은 돈은 포함하지 않습니다.'],
+  cp_carry: ['incl. {x} overdue carried in', '전월 연체 이월 {x} 포함'], cp_future: ['incl. {x} recorded with a future receipt date', '입금일이 아직 안 된 등록 입금 {x} 포함'], cp_open: ['Open invoices', '남은 인보이스'],
+  cp_note: ['Due this month = invoices due on or before month-end that were unpaid on the 1st (overdue carried in). Received = receipts applied to them from the 1st through today. Early payments of next month\'s invoices are not counted.', '입금 예정 = 이 달 말까지 만기인 인보이스 중 1일 기준 미입금액(전월 연체 이월 포함). 입금 완료 = 그 인보이스에 1일부터 오늘까지 배분된 입금(입금일이 오늘 이후인 건은 제외). 다음 달 만기분을 미리 받은 돈은 포함하지 않습니다.'],
 });
 function collectPlan(mo, inclIC) {
   const [yy, mm] = mo.split('-').map(Number); const FROM = mo + '-01', TO = monthEnd(yy, mm), today = todayStr();
@@ -1097,7 +1100,7 @@ function collectPlan(mo, inclIC) {
     const due = invDue(i); if (!due || due > TO) continue;
     const xs = al.get(i.id) || [];
     const owed = r2((+i.amount || 0) - xs.filter(x => x.d < FROM).reduce((s, x) => s + x.a, 0)); if (owed <= 0.004) continue;
-    const inM = xs.filter(x => x.d >= FROM && x.d <= TO); const done = r2(inM.reduce((s, x) => s + x.a, 0)); const fut = r2(inM.filter(x => x.d > today).reduce((s, x) => s + x.a, 0));
+    const inM = xs.filter(x => x.d >= FROM && x.d <= TO); const done = r2(inM.filter(x => x.d <= today).reduce((s, x) => s + x.a, 0)); const fut = r2(inM.filter(x => x.d > today).reduce((s, x) => s + x.a, 0));   // future-dated receipts are not received yet
     const left = Math.max(0, r2(owed - done));
     if (!byV.has(i.vendorId)) byV.set(i.vendorId, { vendorId: i.vendorId, target: 0, done: 0, left: 0, n: 0 });
     const v = byV.get(i.vendorId); v.target = r2(v.target + owed); v.done = r2(v.done + done); v.left = r2(v.left + left); if (left > 0.004) { v.n++; open.push({ i, due, left }); }
@@ -1113,9 +1116,9 @@ function collectPlanCard(mo, inclIC) {
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:stretch">
       ${box(t('cp_target'), T.target, T.carry > 0.004 ? t('cp_carry', { x: money(T.carry) }) : '')}
       <div style="align-self:center;font-size:20px" class="muted">−</div>
-      ${box(t('cp_done'), T.done, T.future > 0.004 ? t('cp_future', { x: money(T.future) }) : '')}
+      ${box(t('cp_done'), T.done, LANG === 'ko' ? `${todayStr()}까지` : `through ${todayStr()}`)}
       <div style="align-self:center;font-size:20px" class="muted">=</div>
-      ${box(t('cp_left'), T.left, t('invoicesN', { n: cp.open.length }), 'color:var(--accent)')}
+      ${box(t('cp_left'), T.left, t('invoicesN', { n: cp.open.length }) + (T.future > 0.004 ? ' · ' + t('cp_future', { x: money(T.future) }) : ''), 'color:var(--accent)')}
     </div>
     <div class="tbl-wrap" style="margin-top:12px"><table class="t"><thead><tr><th>${t('vendor')}</th><th class="num">${t('cp_target')}</th><th class="num">${t('cp_done')}</th><th class="num">${t('cp_left')}</th></tr></thead><tbody>
       ${cp.rows.map(x => `<tr class="click" data-act="vendor" data-id="${x.vendorId}"><td>${esc(vName(x.vendorId))}</td><td class="num">${n(x.target)}</td><td class="num">${n(x.done)}</td><td class="num"><b>${n(x.left)}</b>${x.n ? ` <span class="muted" style="font-size:11px">(${x.n})</span>` : ''}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">${t('noData')}</td></tr>`}
@@ -1706,7 +1709,7 @@ function invoiceModal(inv, preset = {}) {
     ${inv.needsReview ? `<div class="f full"><div class="warnbox">${(inv.reviewFlags || []).map(k => '• ' + t('rv_' + k, { y: (inv.invoiceDate || '').slice(0, 4) })).join('<br>')}<br><label class="chk" style="margin-top:6px;color:var(--warn)"><input type="checkbox" id="iRev" checked> ${t('clearReview')}</label></div></div>` : ''}
     <div class="f full" id="iDupBox"></div>
   </div>
-  ${!isNew ? `<div style="margin-top:16px"><div style="font-weight:600;font-size:13px;margin-bottom:6px">${t('payHistory')}</div>${pays.length ? `<table class="t"><thead><tr><th>${t('payDate')}</th><th>${t('method')}</th><th class="num">${t('applied')}</th><th></th></tr></thead><tbody>${pays.map(p => `<tr><td>${p.date || '—'}</td><td>${p.method ? t('methods_' + p.method) : ''}</td><td class="num">${money((p.allocations.find(a => a.invoiceId === inv.id) || {}).amount)}</td><td><button class="btn sm" data-act="editPay" data-id="${p.id}">${t('edit')}</button></td></tr>`).join('')}</tbody></table><div class="pill-sum"><span>${t('paid')} <b>${money(x.applied)}</b></span><span>${t('open')} <b>${money(x.open)}</b></span></div>` : `<div class="muted">${t('noPay')}</div>`}</div>` : ''}`;
+  ${!isNew ? `<div style="margin-top:16px"><div style="font-weight:600;font-size:13px;margin-bottom:6px">${t('payHistory')}</div>${pays.length ? `<table class="t"><thead><tr><th>${t('payDate')}</th><th>${t('method')}</th><th class="num">${t('applied')}</th><th></th></tr></thead><tbody>${pays.map(p => `<tr ${isFuturePay(p) ? 'style="opacity:.6"' : ''}><td>${p.date || '—'}${isFuturePay(p) ? ' ' + futBadge() : ''}</td><td>${p.method ? t('methods_' + p.method) : ''}</td><td class="num">${money((p.allocations.find(a => a.invoiceId === inv.id) || {}).amount)}</td><td><button class="btn sm" data-act="editPay" data-id="${p.id}">${t('edit')}</button></td></tr>`).join('')}</tbody></table><div class="pill-sum"><span>${t('paid')} <b>${money(x.applied)}</b></span><span>${t('open')} <b>${money(x.open)}</b></span></div>` : `<div class="muted">${t('noPay')}</div>`}</div>` : ''}`;
   const foot = `${!isNew ? `<button class="btn danger ed" data-act="delInv" data-id="${inv.id}">${t('del')}</button>` : ''}${inv.issue ? ` <button class="btn" data-act="reprint" data-id="${inv.id}">🧾 ${t('reprint')}</button>` : ''}<span class="sp"></span><button class="btn" data-act="closeModal">${t('cancel')}</button>${!isNew && x && x.open > 0.004 ? `<button class="btn ed" data-act="payInv" data-id="${inv.id}">${t('recordPayment')}</button>` : ''}<button class="btn pri ed" id="iSave">${t('save')}</button>`;
   openModal({ title: isNew ? t('newInvoice') : `${t('invoiceDetail')} · ${esc(inv.invoiceNo || '')}`, body, foot });
   const upd = () => {
@@ -1805,16 +1808,16 @@ function vPayments() {
   let list = S.payments.filter(p => ok(p.vendorId) && (!f.review || p.needsReview) && (!f.vendor || p.vendorId === f.vendor) && (!f.method || p.method === f.method) && (!f.from || (p.date || '') >= f.from) && (!f.to || (p.date || '9') <= f.to)
     && (!q || `${vName(p.vendorId)} ${p.ref} ${p.memo} ${p.amount} ${(p.allocations || []).map(a => S.invoices.find(i => i.id === a.invoiceId)?.invoiceNo).join(' ')}`.toLowerCase().includes(q)));
   list.sort((a, b) => (b.date || '9999').localeCompare(a.date || '9999'));
-  const tot = list.reduce((s, p) => s + (+p.amount || 0), 0);
+  const tot = list.filter(p => !isFuturePay(p)).reduce((s, p) => s + (+p.amount || 0), 0), futTot = r2(list.filter(isFuturePay).reduce((s, p) => s + (+p.amount || 0), 0));
   const shown = list.slice(0, f.limit);
   let h = pageHead(t('payments'), t('showing', { n: shown.length, m: list.length }), `<label class="chk"><input type="checkbox" id="inclIC" ${UI.inclIC ? 'checked' : ''}> ${t('inclIC')}</label><button class="btn pri ed" data-act="newPay">＋ ${t('recordPayment')}</button>`);
   h += `<div class="filters"><input class="inp" id="gq" placeholder="${t('search')}" value="${esc(f.q)}" style="width:220px"><select class="inp" id="gv">${vendorOptions(f.vendor).replace(t('selVendor'), LANG === 'ko' ? '전체 업체' : 'All vendors')}</select>
   <label class="chk"><input type="checkbox" id="grv" ${f.review ? 'checked' : ''}> ${t('needReview')}</label>
   <select class="inp" id="gm"><option value="">${t('method')}: ${t('all')}</option>${METHODS.map(m => `<option value="${m}" ${f.method === m ? 'selected' : ''}>${t('methods_' + m)}</option>`).join('')}</select>
   <label class="chk">${t('from')} <input type="date" class="inp" id="gf" value="${f.from}"></label><label class="chk">${t('to')} <input type="date" class="inp" id="gt" value="${f.to}"></label>
-  <span style="flex:1"></span><span class="pill-sum"><span>${t('total')} <b>${money(tot)}</b></span></span></div>`;
+  <span style="flex:1"></span><span class="pill-sum"><span>${t('total')} <b>${money(tot)}</b></span>${futTot > 0.004 ? `<span>${LANG === 'ko' ? '입금 예정(미반영)' : 'Scheduled (excluded)'} <b>${money(futTot)}</b></span>` : ''}</span></div>`;
   h += `<div class="card"><div class="tbl-wrap tbl-scroll"><table class="t"><thead><tr><th>${t('payDate')}</th><th>${t('vendor')}</th><th>${t('method')}</th><th>${t('ref')} / ${t('memo')}</th><th>${t('appliedTo')}</th><th class="num">${t('amount')}</th><th class="num">${t('fee')}</th><th class="num">${t('unapplied')}</th><th></th></tr></thead><tbody>
-  ${shown.map(p => { const un = payUnapplied(p); const invs = (p.allocations || []).map(a => S.invoices.find(i => i.id === a.invoiceId)).filter(Boolean); return `<tr><td>${p.date || `<span class="b review">${t('noDate')}</span>`}${p.needsReview ? ` <span class="b review" title="${esc((p.reviewFlags || []).map(k => t('pv_' + k)).join('\n'))}">!</span>` : ''}</td><td class="wrap"><a class="link" data-act="vendor" data-id="${p.vendorId}">${esc(vName(p.vendorId))}</a></td><td>${p.method ? t('methods_' + p.method) : '<span class="muted">—</span>'}</td><td class="wrap muted">${esc([p.ref, p.memo].filter(Boolean).join(' · '))}</td><td class="wrap" title="${esc(invs.map(i => i.invoiceNo).join(', '))}">${invs.length ? esc(invs[0].invoiceNo) + (invs.length > 1 ? ` +${invs.length - 1}` : '') : '<span class="muted">—</span>'}</td><td class="num">${money(p.amount)}</td><td class="num ${p.fee ? '' : 'muted'}">${p.fee ? money(p.fee) : '–'}</td><td class="num ${Math.abs(un) > 0.004 ? '' : 'muted'}">${Math.abs(un) > 0.004 ? money(un) : '–'}</td><td><button class="btn sm" data-act="editPay" data-id="${p.id}">${t('edit')}</button></td></tr>`; }).join('') || `<tr><td colspan="9" class="empty">${t('noData')}</td></tr>`}
+  ${shown.map(p => { const un = payUnapplied(p); const invs = (p.allocations || []).map(a => S.invoices.find(i => i.id === a.invoiceId)).filter(Boolean); return `<tr ${isFuturePay(p) ? 'style="opacity:.6"' : ''}><td>${p.date || `<span class="b review">${t('noDate')}</span>`}${isFuturePay(p) ? ' ' + futBadge() : ''}${p.needsReview ? ` <span class="b review" title="${esc((p.reviewFlags || []).map(k => t('pv_' + k)).join('\n'))}">!</span>` : ''}</td><td class="wrap"><a class="link" data-act="vendor" data-id="${p.vendorId}">${esc(vName(p.vendorId))}</a></td><td>${p.method ? t('methods_' + p.method) : '<span class="muted">—</span>'}</td><td class="wrap muted">${esc([p.ref, p.memo].filter(Boolean).join(' · '))}</td><td class="wrap" title="${esc(invs.map(i => i.invoiceNo).join(', '))}">${invs.length ? esc(invs[0].invoiceNo) + (invs.length > 1 ? ` +${invs.length - 1}` : '') : '<span class="muted">—</span>'}</td><td class="num">${money(p.amount)}</td><td class="num ${p.fee ? '' : 'muted'}">${p.fee ? money(p.fee) : '–'}</td><td class="num ${Math.abs(un) > 0.004 ? '' : 'muted'}">${Math.abs(un) > 0.004 ? money(un) : '–'}</td><td><button class="btn sm" data-act="editPay" data-id="${p.id}">${t('edit')}</button></td></tr>`; }).join('') || `<tr><td colspan="9" class="empty">${t('noData')}</td></tr>`}
   </tbody></table>${list.length > f.limit ? `<div style="padding:12px;text-align:center"><button class="btn" data-act="morePay">+ ${list.length - f.limit}</button></div>` : ''}</div></div>`;
   setTimeout(() => {
     $('#gq').oninput = debounce(e => { UI.pay.q = e.target.value; render(true); }, 250);
@@ -1884,10 +1887,10 @@ function vVendor(id) {
     const hideRow = e => UI.ledHidePaid && (e.i ? invStatus(e.i, c.inv.get(e.i.id)) === 'paid'
       : (e.p.allocations || []).length > 0 && Math.abs(payUnapplied(e.p)) < 0.005 && e.p.allocations.every(a => paidInv(a.invoiceId)));
     const rows = ev.map(e => {
-      if (hideRow(e)) { bal = e.i ? r2(bal + (+e.i.amount || 0)) : r2(bal - (+e.p.amount || 0) - (+e.p.fee || 0)); hidden++; return ''; }
+      if (hideRow(e)) { bal = e.i ? r2(bal + (+e.i.amount || 0)) : isFuturePay(e.p) ? bal : r2(bal - (+e.p.amount || 0) - (+e.p.fee || 0)); hidden++; return ''; }
       if (e.i) { bal = r2(bal + (+e.i.amount || 0)); const x = c.inv.get(e.i.id); const st = invStatus(e.i, x); return `<tr class="click" data-act="editInv" data-id="${e.i.id}"><td>${e.d || '—'}</td><td><span class="b open">${t('charge')}</span></td><td class="wrap">${esc(e.i.invoiceNo)}</td><td class="wrap muted">${esc(e.i.memo)}</td><td class="num">${money(e.i.amount)}</td><td class="num"></td><td class="num">${money(bal)}</td><td>${badge(st)}${e.i.needsReview ? ' <span class="b review">!</span>' : ''}</td></tr>`; }
-      bal = r2(bal - (+e.p.amount || 0) - (+e.p.fee || 0)); const invs = (e.p.allocations || []).map(a => S.invoices.find(i => i.id === a.invoiceId)?.invoiceNo).filter(Boolean);
-      return `<tr class="click" data-act="editPay" data-id="${e.p.id}"><td>${e.d || '<span class="b review">' + t('noDate') + '</span>'}</td><td><span class="b paid">${t('payment')}</span></td><td class="wrap muted">${esc(invs.join(', ') || e.p.ref || '')}</td><td class="wrap muted">${esc([e.p.method ? t('methods_' + e.p.method) : '', e.p.memo, e.p.fee ? `${t('fee')} ${money(e.p.fee)}` : ''].filter(Boolean).join(' · '))}</td><td class="num"></td><td class="num">${money(e.p.amount)}</td><td class="num">${money(bal)}</td><td>${e.p.needsReview ? '<span class="b review">!</span>' : ''}</td></tr>`;
+      const fut = isFuturePay(e.p); if (!fut) bal = r2(bal - (+e.p.amount || 0) - (+e.p.fee || 0)); const invs = (e.p.allocations || []).map(a => S.invoices.find(i => i.id === a.invoiceId)?.invoiceNo).filter(Boolean);
+      return `<tr class="click" data-act="editPay" data-id="${e.p.id}" ${fut ? 'style="opacity:.6"' : ''}><td>${e.d || '<span class="b review">' + t('noDate') + '</span>'}${fut ? ' ' + futBadge() : ''}</td><td><span class="b paid">${t('payment')}</span></td><td class="wrap muted">${esc(invs.join(', ') || e.p.ref || '')}</td><td class="wrap muted">${esc([e.p.method ? t('methods_' + e.p.method) : '', e.p.memo, e.p.fee ? `${t('fee')} ${money(e.p.fee)}` : ''].filter(Boolean).join(' · '))}</td><td class="num"></td><td class="num">${money(e.p.amount)}</td><td class="num">${money(bal)}</td><td>${e.p.needsReview ? '<span class="b review">!</span>' : ''}</td></tr>`;
     }).join('');
     h += `<div class="card"><div class="tbl-wrap tbl-scroll"><table class="t"><thead><tr><th>${t('date')}</th><th>${t('type')}</th><th>${t('invNo')}</th><th>${t('memo')}</th><th class="num">${t('charge')}</th><th class="num">${t('payment')}</th><th class="num">${t('balance')}</th><th>${t('status')}</th></tr></thead><tbody>${rows || `<tr><td colspan="8" class="empty">${t('noData')}</td></tr>`}</tbody></table></div></div>`;
     if (hidden) h += `<div class="muted" style="font-size:12px;margin-top:8px">${t('hiddenPaid', { n: hidden })}</div>`;
