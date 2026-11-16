@@ -1081,6 +1081,48 @@ function periodStats(r, inclIC) {
   return { rows: list, tot, prod, monthly, cC };
 }
 const monLabel = mo => { const [y, m] = mo.split('-'); return LANG === 'ko' ? `${y}.${m}` : `${MONTHS[+m - 1][0].toUpperCase() + MONTHS[+m - 1].slice(1)} ${y}`; };
+/* monthly collection plan: invoices due by month-end that were still unpaid at the start of the month */
+Object.assign(L, {
+  cp_title: ['Collections plan', '월 입금 예정'], cp_target: ['Due this month', '이번 달 입금 예정'], cp_done: ['Received', '입금 완료'], cp_left: ['Still to collect', '남은 입금 예정'],
+  cp_carry: ['incl. {x} overdue carried in', '전월 연체 이월 {x} 포함'], cp_future: ['incl. {x} dated after today', '오늘 이후 날짜 입금 {x} 포함'], cp_open: ['Open invoices', '남은 인보이스'],
+  cp_note: ['Due this month = invoices due on or before month-end that were unpaid on the 1st (overdue carried in). Received = receipts applied to them this month. Early payments of next month\'s invoices are not counted.', '입금 예정 = 이 달 말까지 만기인 인보이스 중 1일 기준 미입금액(전월 연체 이월 포함). 입금 완료 = 그 인보이스에 이번 달 배분된 입금. 다음 달 만기분을 미리 받은 돈은 포함하지 않습니다.'],
+});
+function collectPlan(mo, inclIC) {
+  const [yy, mm] = mo.split('-').map(Number); const FROM = mo + '-01', TO = monthEnd(yy, mm), today = todayStr();
+  const ok = id => inclIC || !isIC(vendorById(id));
+  const al = new Map(); for (const p of S.payments) for (const a of p.allocations || []) { if (!al.has(a.invoiceId)) al.set(a.invoiceId, []); al.get(a.invoiceId).push({ d: p.date || '', a: +a.amount || 0 }); }
+  const byV = new Map(); const open = []; const tot = { target: 0, carry: 0, done: 0, future: 0, left: 0 };
+  for (const i of S.invoices) {
+    if (!ok(i.vendorId) || (i.invoiceDate && i.invoiceDate > TO)) continue;
+    const due = invDue(i); if (!due || due > TO) continue;
+    const xs = al.get(i.id) || [];
+    const owed = r2((+i.amount || 0) - xs.filter(x => x.d < FROM).reduce((s, x) => s + x.a, 0)); if (owed <= 0.004) continue;
+    const inM = xs.filter(x => x.d >= FROM && x.d <= TO); const done = r2(inM.reduce((s, x) => s + x.a, 0)); const fut = r2(inM.filter(x => x.d > today).reduce((s, x) => s + x.a, 0));
+    const left = Math.max(0, r2(owed - done));
+    if (!byV.has(i.vendorId)) byV.set(i.vendorId, { vendorId: i.vendorId, target: 0, done: 0, left: 0, n: 0 });
+    const v = byV.get(i.vendorId); v.target = r2(v.target + owed); v.done = r2(v.done + done); v.left = r2(v.left + left); if (left > 0.004) { v.n++; open.push({ i, due, left }); }
+    tot.target = r2(tot.target + owed); tot.done = r2(tot.done + done); tot.left = r2(tot.left + left); tot.future = r2(tot.future + fut); if (due < FROM) tot.carry = r2(tot.carry + owed);
+  }
+  open.sort((a, b) => a.due.localeCompare(b.due));
+  return { mo, from: FROM, to: TO, tot, rows: [...byV.values()].sort((a, b) => b.target - a.target), open };
+}
+function collectPlanCard(mo, inclIC) {
+  const cp = collectPlan(mo, inclIC); const T = cp.tot; const n = v => Math.abs(v) < 0.005 ? '<span class="muted">–</span>' : money(v);
+  const box = (l, v, s, st = '') => `<div style="flex:1;min-width:180px;padding:10px 14px;border:1px solid var(--line, #e5e7eb);border-radius:10px"><div class="muted" style="font-size:12px">${l}</div><div style="font-size:22px;font-weight:700;${st}">${money(v)}</div><div class="muted" style="font-size:12px;min-height:16px">${s}</div></div>`;
+  return `<div class="card" style="margin-bottom:16px"><div class="card-h"><h3>${t('cp_title')} · ${monLabel(mo)}</h3><span class="sp"></span><span class="muted" style="font-size:12px">${cp.from} ~ ${cp.to}</span></div><div class="card-b">
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:stretch">
+      ${box(t('cp_target'), T.target, T.carry > 0.004 ? t('cp_carry', { x: money(T.carry) }) : '')}
+      <div style="align-self:center;font-size:20px" class="muted">−</div>
+      ${box(t('cp_done'), T.done, T.future > 0.004 ? t('cp_future', { x: money(T.future) }) : '')}
+      <div style="align-self:center;font-size:20px" class="muted">=</div>
+      ${box(t('cp_left'), T.left, t('invoicesN', { n: cp.open.length }), 'color:var(--accent)')}
+    </div>
+    <div class="tbl-wrap" style="margin-top:12px"><table class="t"><thead><tr><th>${t('vendor')}</th><th class="num">${t('cp_target')}</th><th class="num">${t('cp_done')}</th><th class="num">${t('cp_left')}</th></tr></thead><tbody>
+      ${cp.rows.map(x => `<tr class="click" data-act="vendor" data-id="${x.vendorId}"><td>${esc(vName(x.vendorId))}</td><td class="num">${n(x.target)}</td><td class="num">${n(x.done)}</td><td class="num"><b>${n(x.left)}</b>${x.n ? ` <span class="muted" style="font-size:11px">(${x.n})</span>` : ''}</td></tr>`).join('') || `<tr><td colspan="4" class="empty">${t('noData')}</td></tr>`}
+    </tbody>${cp.rows.length ? `<tfoot><tr><td>${t('total')}</td><td class="num">${money(T.target)}</td><td class="num">${money(T.done)}</td><td class="num">${money(T.left)}</td></tr></tfoot>` : ''}</table></div>
+    ${cp.open.length ? `<details style="margin-top:10px"><summary style="cursor:pointer;font-size:13px">${t('cp_open')} (${cp.open.length})</summary><div class="tbl-wrap" style="margin-top:6px;max-height:300px"><table class="t"><thead><tr><th>${t('vendor')}</th><th>${t('invNo')}</th><th>${t('dueDate')}</th><th class="num">${t('cp_left')}</th></tr></thead><tbody>${cp.open.map(o => `<tr class="click" data-act="editInv" data-id="${o.i.id}"><td>${esc(vName(o.i.vendorId))}</td><td>${esc(o.i.invoiceNo)}</td><td ${o.due < todayStr() ? 'style="color:var(--bad)"' : ''}>${o.due}</td><td class="num">${money(o.left)}</td></tr>`).join('')}</tbody></table></div></details>` : ''}
+    <div class="muted" style="font-size:12px;margin-top:8px">${t('cp_note')}</div></div></div>`;
+}
 
 /* =================== DASHBOARD =================== */
 function vDashboard() {
@@ -1109,6 +1151,7 @@ function vDashboard() {
   const undated = S.payments.filter(p => !p.date && c.vOK(p.vendorId));
   h += shipDashBox();
   if (undated.length) h += `<div class="warnbox" style="cursor:pointer" data-act="go" data-go="payments|review">⚠ ${LANG === 'ko' ? `입금일이 없는 입금 ${undated.length}건 (${money(undated.reduce((s, p) => s + (+p.amount || 0), 0))}) — 기간 집계에 들어가지 않아 기초·기말이 맞지 않을 수 있습니다. 입금 내역에서 날짜를 넣어주세요.` : `${undated.length} receipts have no date (${money(undated.reduce((s, p) => s + (+p.amount || 0), 0))}) — they are left out of period totals. Add their dates under Receipts.`}</div>`;
+  h += collectPlanCard(r.to.slice(0, 7), UI.inclIC);
   // customer roll-forward
   const rows = ps.rows.filter(x => [x.opening, x.invoiced, x.received, x.closing].some(v => Math.abs(v) > 0.004)).sort((a, b) => b.closing - a.closing || b.invoiced - a.invoiced);
   const n = v => Math.abs(v) < 0.005 ? '<span class="muted">–</span>' : money(v);
