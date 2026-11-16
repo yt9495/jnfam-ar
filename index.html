@@ -968,6 +968,8 @@ const UI = {
   vendorTab: 'ledger',
 };
 const ACT = {};
+/* Prevent double-submit: ignore further clicks on a save button while its async handler is still running (repeat clicks used to create duplicate records). */
+const guardBusy = fn => async function (ev) { const b = this; if (b.dataset.busy) return; b.dataset.busy = '1'; b.disabled = true; try { return await fn.call(this, ev); } catch (e) { toast(e.message || String(e), true); } finally { delete b.dataset.busy; b.disabled = false; } };
 let CH = {};
 const AGE_COLORS = ['var(--ag0)', 'var(--ag1)', 'var(--ag2)', 'var(--ag3)', 'var(--ag4)'];
 
@@ -1673,7 +1675,7 @@ function invoiceModal(inv, preset = {}) {
   $('#iSalesX2').onclick = () => { $('#iSales').value = r2((+$('#iAmt').value || 0) * 2); inv.dep50 = 'half'; };
   $('#iSalesD2').onclick = () => { const full = +$('#iAmt').value || 0; $('#iSales').value = r2(full); $('#iAmt').value = r2(full / 2); inv.dep50 = 'full'; };
   ['iV', 'iDate', 'iNo', 'iAmt'].forEach(id => $('#' + id).addEventListener('input', upd)); upd();
-  $('#iSave').onclick = async () => {
+  $('#iSave').onclick = guardBusy(async () => {
     const doc = { ...inv, vendorId: $('#iV').value, invoiceNo: $('#iNo').value.trim(), amount: r2($('#iAmt').value), invoiceDate: $('#iDate').value, dueDate: $('#iDue').value, memo: $('#iMemo').value.trim(), note: $('#iNote').value.trim(), product: $('#iAcc').value, poNo: $('#iPo').value.trim(), salesAmount: $('#iSales').value === '' ? null : r2($('#iSales').value) };
     if (doc.salesAmount == null) doc.dep50 = null;
     if (doc.lines && doc.lines.length === 1) delete doc.lines;
@@ -1683,7 +1685,7 @@ function invoiceModal(inv, preset = {}) {
     await Store.put('invoices', doc);
     for (const l of S.shiplinks.filter(l => (l.invoiceIds || []).includes(doc.id))) pushTaskBadge(l.id);   // invoice no. may have changed
     closeModal(); toast(t('savedT')); render();
-  };
+  });
 }
 ACT.delInv = async el => {
   if (!confirm(t('confirmDel'))) return;
@@ -1738,14 +1740,15 @@ function paymentModal(pay, preset = {}) {
   $('#pA').oninput = sum; $('#pF').oninput = sum;
   $('#pAuto').onclick = () => { let rem = r2((+$('#pA').value || 0) + (+$('#pF').value || 0)); rows.forEach(r => { const a = Math.max(0, Math.min(r.avail, rem)); r.alloc = r2(a); rem = r2(rem - a); }); drawRows(); sum(); };
   buildRows();
-  $('#pSave').onclick = async () => {
+  $('#pSave').onclick = guardBusy(async () => {
     const amt = r2($('#pA').value); if (!$('#pV').value) return toast(t('vendorReq'), true); if (!amt) return toast(t('amtReq'), true);
     for (const r of rows) if (r.alloc > r.avail + 0.004) return toast(`${r.i.invoiceNo}: ${t('applied')} > ${t('open')}`, true);
     const doc = { ...pay, vendorId: $('#pV').value, date: $('#pD').value, method: $('#pM').value, amount: amt, fee: r2($('#pF').value), ref: $('#pR').value.trim(), memo: $('#pMemo').value.trim(), allocations: rows.filter(r => r.alloc > 0.004).map(r => ({ invoiceId: r.i.id, amount: r2(r.alloc) })) };
     if (payUnapplied(doc) < -0.004) return toast(t('overAlloc'), true);
     if (doc.needsReview && $('#pRev') && $('#pRev').checked) { doc.needsReview = false; doc.reviewFlags = []; }
+    if (isNew) { const dup = S.payments.filter(p => p.vendorId === doc.vendorId && p.date === doc.date && Math.abs((+p.amount || 0) - doc.amount) < 0.005); if (dup.length && !confirm(LANG === 'ko' ? `같은 고객·입금일·금액(${money(doc.amount)})의 입금이 이미 ${dup.length}건 등록되어 있습니다.\n\n그래도 저장할까요?` : `${dup.length} receipt(s) with the same customer, date and amount (${money(doc.amount)}) already exist.\n\nSave anyway?`)) return; }
     await Store.put('payments', doc); closeModal(); toast(t('savedT')); render();
-  };
+  });
 }
 ACT.editPay = el => paymentModal(S.payments.find(p => p.id === el.dataset.id));
 ACT.newPay = el => paymentModal(null, { vendorId: el.dataset.vendor || UI.pay.vendor || '' });
@@ -1814,7 +1817,7 @@ function readVendorForm(v) {
 }
 ACT.newVendor = (el, e, preset = {}) => {
   openModal({ title: t('newVendor'), body: vendorForm({ name: preset.name || '', group: 'operating' }), foot: `<span class="sp"></span><button class="btn" data-act="closeModal">${t('cancel')}</button><button class="btn pri ed" id="vfSave">${t('save')}</button>`, wide: true });
-  $('#vfSave').onclick = async () => { const d = readVendorForm({}); if (!d) return; const doc = await Store.put('vendors', d); closeModal(); toast(t('savedT')); if (preset.onSaved) preset.onSaved(doc); else render(); };
+  $('#vfSave').onclick = guardBusy(async () => { const d = readVendorForm({}); if (!d) return; const doc = await Store.put('vendors', d); closeModal(); toast(t('savedT')); if (preset.onSaved) preset.onSaved(doc); else render(); });
 };
 
 function vVendor(id) {
